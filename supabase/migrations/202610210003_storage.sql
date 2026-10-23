@@ -1,0 +1,4 @@
+insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types) values('documents','documents',false,20971520,array['application/pdf','image/jpeg','image/png']) on conflict(id) do update set public=false,file_size_limit=excluded.file_size_limit,allowed_mime_types=excluded.allowed_mime_types;
+create policy documents_read on storage.objects for select to authenticated using(bucket_id='documents' and exists(select 1 from public.documents d where d.storage_path=storage.objects.name and d.status<>'deleting' and public.workspace_role(d.workspace_id) is not null));
+create policy documents_upload on storage.objects for insert to authenticated with check(bucket_id='documents' and exists(select 1 from public.documents d where d.storage_path=storage.objects.name and d.status='uploading' and d.uploaded_by=auth.uid() and public.can_edit(d.workspace_id)));
+-- Deletion is an outbox operation handled by the worker. No direct browser deletes or overwrites.

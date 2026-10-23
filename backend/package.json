@@ -1,0 +1,37 @@
+{
+  "name": "@afterbuy/backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+    "worker": "tsx --env-file-if-exists=.env src/worker.ts",
+    "build": "tsc",
+    "start": "node --env-file-if-exists=.env dist/backend/src/server.js",
+    "worker:start": "node --env-file-if-exists=.env dist/backend/src/worker.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "5.3.0",
+    "@supabase/supabase-js": "2.118.0",
+    "openai": "7.39.0",
+    "bullmq": "6.3.19",
+    "ioredis": "6.0.0",
+    "cors": "2.8.6",
+    "helmet": "8.3.0",
+    "express-rate-limit": "8.7.1",
+    "multer": "2.4.0",
+    "pino": "10.4.0",
+    "pdfjs-dist": "6.4.299",
+    "pdf-lib": "1.17.1",
+    "archiver": "8.0.0",
+    "file-type": "22.2.0"
+  },
+  "devDependencies": {
+    "tsx": "4.23.15",
+    "@types/express": "5.0.6",
+    "@types/cors": "2.8.19",
+    "@types/multer": "2.3.0",
+    "@types/archiver": "8.0.0"
+  }
+}
