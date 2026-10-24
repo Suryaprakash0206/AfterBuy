@@ -11,6 +11,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "db:prepare": "node scripts/database-setup.mjs",
     "dev": "concurrently -n api,web -c blue,white \"npm run dev -w backend\" \"npm run dev -w frontend\"",
     "worker": "npm run worker -w backend",
     "build": "npm run build --workspaces",

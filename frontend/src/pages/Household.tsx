@@ -175,7 +175,7 @@ export function Household() {
               <Empty
                 icon={<Users size={25} />}
                 title="No invitations yet."
-                description="Invitation links expire in seven days and work only for the intended verified email address."
+                description="Invitation links expire in seven days and work only for an account with the invited email address."
               />
             )}
           </QueryState>
@@ -284,7 +284,7 @@ export function Invitation() {
       <h1>You’ve been invited.</h1>
       <p>
         Join a household to manage purchases and their aftercare together. Use
-        the verified account this invitation was sent to.
+        an account with the email address this invitation was created for.
       </p>
       <ErrorNotice error={error} />
       {!session ? (

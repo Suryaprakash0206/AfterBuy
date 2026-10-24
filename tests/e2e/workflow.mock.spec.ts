@@ -310,6 +310,42 @@ async function accessibility(page: Page) {
     .analyze();
   expect(results.violations).toEqual([]);
 }
+test("MOCK integrations: sign-up opens the app without an email-verification step", async ({
+  page,
+}) => {
+  await fixtures(page);
+  await page.goto("/auth");
+  await page
+    .getByRole("button", { name: "New here? Create an account" })
+    .click();
+  await page.getByLabel("Email address").fill("owner@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page
+    .getByRole("button", { name: "Create account", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome home, Alex." }),
+  ).toBeVisible();
+});
+test("MOCK integrations: interrupted sign-in shows a useful error and can be retried", async ({
+  page,
+}) => {
+  await fixtures(page);
+  const url = "http://127.0.0.1:54321/auth/v1/token**";
+  await page.route(url, (route) => route.abort("connectionfailed"));
+  await page.goto("/auth");
+  await page.getByLabel("Email address").fill("owner@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(
+    page.getByText(/Could not reach the sign-in service/),
+  ).toBeVisible();
+  await page.unroute(url);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome home, Alex." }),
+  ).toBeVisible();
+});
 test("MOCK integrations: sign in → upload → review → coverage → case → PDF export", async ({
   page,
 }, info) => {

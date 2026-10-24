@@ -2,7 +2,7 @@ import { beforeAll, afterAll, describe, it, expect } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 import { vector } from "@electric-sql/pglite-pgvector";
-import { readFile, readdir } from "node:fs/promises";
+import { buildDatabaseSetup } from "../scripts/database-setup.mjs";
 import { randomUUID } from "node:crypto";
 import { coverageDates } from "../shared/domain.js";
 // Real PostgreSQL engine and pgvector in WASM. Only Supabase's auth/storage schemas are test stand-ins.
@@ -11,7 +11,8 @@ const owner = randomUUID(),
   editor = randomUUID(),
   viewer = randomUUID(),
   outsider = randomUUID(),
-  invitee = randomUUID();
+  invitee = randomUUID(),
+  unconfirmed = randomUUID();
 let w: string,
   w2: string,
   p: string,
@@ -38,10 +39,11 @@ beforeAll(async () => {
  create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
  create table storage.objects(id uuid primary key default gen_random_uuid(),bucket_id text,name text,unique(bucket_id,name));
  alter table storage.objects enable row level security;grant select,insert,delete on storage.objects to authenticated;grant all on storage.objects,storage.buckets to service_role;`);
-  for (const file of (await readdir("supabase/migrations"))
-    .filter((f) => f.endsWith(".sql"))
-    .sort())
-    await db.exec(await readFile(`supabase/migrations/${file}`, "utf8"));
+  await db.query(
+    "insert into auth.users(id,email) values($1,'unconfirmed@example.test')",
+    [unconfirmed],
+  );
+  await db.exec(await buildDatabaseSetup());
   for (const [id, email] of [
     [owner, "owner@example.test"],
     [editor, "editor@example.test"],
@@ -83,6 +85,19 @@ afterAll(async () => {
   await db?.close();
 });
 describe("schema and actual RLS", () => {
+  it("backfills an existing account and allows onboarding without email confirmation", async () => {
+    await as(unconfirmed);
+    expect(
+      (await db.query("select * from profiles where id=$1", [unconfirmed]))
+        .rows,
+    ).toHaveLength(1);
+    const personal = (
+      await row("select create_workspace('Personal','personal') id")
+    ).id;
+    expect((await row("select workspace_role($1) role", [personal])).role).toBe(
+      "owner",
+    );
+  });
   it("enables RLS on every public application table", async () => {
     await admin();
     const r = await row(
@@ -140,6 +155,11 @@ describe("schema and actual RLS", () => {
     ).toBe("123456789012.1234");
   });
   it("supports intended-account, expiring, single-use invites", async () => {
+    await admin();
+    await db.query(
+      "update auth.users set email_confirmed_at=null where id=$1",
+      [invitee],
+    );
     await as(owner);
     const token = (
       await row(

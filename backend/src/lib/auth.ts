@@ -1,5 +1,6 @@
 import type { RequestHandler } from "express";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { isAuthRetryableFetchError } from "@supabase/supabase-js";
 import { userClient, result } from "./db.js";
 import { AppError } from "./errors.js";
 import { idSchema, type Role } from "../../../shared/domain.js";
@@ -20,17 +21,17 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
   req.db = userClient(token);
   // getUser verifies the token with Supabase Auth; decoded client claims are never trusted.
   const { data, error } = await req.db.auth.getUser(token);
+  if (isAuthRetryableFetchError(error))
+    throw new AppError(
+      503,
+      "AUTH_UNAVAILABLE",
+      "The sign-in service is temporarily unavailable. Please try again shortly.",
+    );
   if (error || !data.user)
     throw new AppError(
       401,
       "SESSION_EXPIRED",
       "Your session expired. Sign in again.",
-    );
-  if (!data.user.email_confirmed_at)
-    throw new AppError(
-      403,
-      "EMAIL_UNVERIFIED",
-      "Verify your email address before continuing.",
     );
   req.userId = data.user.id;
   next();

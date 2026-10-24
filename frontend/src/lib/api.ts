@@ -62,7 +62,10 @@ export async function api<T = any>(
     if (response.status === 401)
       await supabase?.auth.signOut({ scope: "local" });
     throw new ApiError(
-      body.error?.message || "The request failed.",
+      body.error?.message ||
+        (response.status >= 500
+          ? "The AfterBuy server is unavailable. Try again shortly; for local development, keep npm run dev running."
+          : "The request failed."),
       body.error?.code || "REQUEST_FAILED",
       body.error?.requestId,
       body,

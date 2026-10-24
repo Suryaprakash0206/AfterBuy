@@ -17,7 +17,7 @@ User requests verify tokens with Supabase `getUser(token)`, not decoded claims. 
 
 ## Data model and privacy
 
-- Profiles hold currency, IANA timezone and reminder preferences. Workspaces have memberships with owner/editor/viewer roles. Only owners can invite or change other non-owner members. Tokens are random, hashed in storage, expire in seven days and are single-use for the intended verified email.
+- Profiles hold currency, IANA timezone and reminder preferences. Workspaces have memberships with owner/editor/viewer roles. Only owners can invite or change other non-owner members. Tokens are random, hashed in storage, expire in seven days and are single-use for the authenticated account matching the intended email. Per the requested configuration, email confirmation is disabled: matching the account email does not independently prove mailbox ownership. Session verification, intended-email matching, token possession, expiry and membership permissions remain enforced.
 - Products own coverage, cases, lifecycle history and document links. Composite `(id, workspace_id)` foreign keys prevent cross-workspace associations. Scope is immutable even for direct PostgREST writes.
 - Invoices and invoice line items preserve invoice totals independently of product costs. Confirmation locks the document and commits the invoice, all products, links and review in one transaction. A second confirmation returns the same product IDs. File hash uniqueness is workspace-scoped. Possible purchase duplicates are flagged for explicit acknowledgement.
 - Documents are private objects. The backend checks access before returning 120-second signed URLs. Storage RLS also checks the matching document and membership. A deletion first tombstones the document, removes chunks, extraction content and cited chat messages, then the worker removes the object and row. Previously issued signed URLs can remain usable until their short expiry.
@@ -51,7 +51,7 @@ Optional Resend delivery records distinguish `pending`, `accepted`, `failed`, `d
 
 ## Known limits and verification boundaries
 
-- Hosted migrations/Auth sign-in, live Storage, BullMQ/Redis, live OpenAI and Resend were not integration-tested: schema/privileged keys, running Docker and AI configuration were unavailable. Read-only Auth connectivity succeeded; missing hosted schema was detected explicitly.
+- All seven migrations were applied to the connected hosted project on 2026-10-24. Live Auth sign-in and onboarding loaded, API readiness returned 200, and the documents bucket was verified private. Live Storage upload/download, BullMQ/Redis, OpenAI and Resend still need integration checks and the remaining worker/provider configuration.
 - PGlite runs actual PostgreSQL constraints/RLS/functions/pgvector but replaces Supabase-managed Auth/Storage schemas. It is not a hosted Storage HTTP test.
 - Browser workflow tests use clearly labelled fixture Auth/API/AI responses. Real local PDF/ZIP generation is tested separately. A credential-gated live workflow is provided and skipped by default.
 - The app is intended for individual/household scale. Product collection is paginated; document/case lists cap at 500, coverage at 1,000, notifications/deliveries at 200, and some selectors at 100. Large-scale operations need additional pagination. Upload/export buffers are bounded but held in memory; maximum ZIP evidence is 15 files / 80 MB.

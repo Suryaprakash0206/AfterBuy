@@ -1,6 +1,6 @@
 # REST API v1
 
-Base path: `/api/v1`. All endpoints except `health`, `ready` and `config` require `Authorization: Bearer <Supabase access token>`. The API verifies the token with Supabase Auth and requires a verified email. Send JSON except file uploads. The Vite development server proxies `/api` to Express.
+Base path: `/api/v1`. All endpoints except `health`, `ready` and `config` require `Authorization: Bearer <Supabase access token>`. The API verifies the token with Supabase Auth; email confirmation is optional. Transient Auth connectivity failures return `503 AUTH_UNAVAILABLE` without signing the user out; invalid sessions return 401. Send JSON except file uploads. The Vite development server proxies `/api` to Express.
 
 Errors use `{ "error": { "code": "...", "message": "...", "requestId": "..." } }`. The request ID is also in `X-Request-Id`. Validation is 400, unauthenticated 401, forbidden 403, missing record 404, state/duplicate conflicts 409, oversized files 413, throttling 429, provider failures 502, and missing service configuration 503. Requests never expose provider error bodies or credentials.
 
@@ -16,9 +16,9 @@ Money is a decimal **string**, for example `"24999.00"`, or null; dates are ISO 
 | GET | `/me` | Profile, current user ID and accessible memberships/workspaces. |
 | PATCH | `/me` | Preferences: display_name, currency, timezone, reminder_days, reminders_enabled, email_enabled. |
 | POST | `/workspaces` | `{name, kind: "personal" | "household"}` → `{id}`. Personal creation is idempotent. |
-| POST | `/invitations/accept` | `{token}` → `{workspace_id}`; intended verified email only. |
+| POST | `/invitations/accept` | `{token}` → `{workspace_id}`; authenticated account matching the intended email only. |
 
-Sign up, sign in, email verification, resend verification, password reset and sign out use the official Supabase frontend SDK directly. Backend permissions do not depend on client route protection.
+Sign up, sign in, password reset and sign out use the official Supabase frontend SDK directly. Hosted Auth's Confirm email setting must be disabled for immediate sign-up sessions. Backend permissions do not depend on client route protection.
 
 ## Workspace-scoped endpoints
 

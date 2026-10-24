@@ -11,6 +11,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { ArrowRight, ShieldCheck, FileText, Clock3, Check } from "lucide-react";
 import { configured, supabase, api } from "../lib/api";
 import { useApp } from "../lib/context";
+import { authError } from "../lib/auth-error";
 import {
   Button,
   ErrorNotice,
@@ -48,18 +49,15 @@ export function Auth() {
     try {
       const result =
         mode === "signup"
-          ? await supabase.auth.signUp({
-              ...v,
-              options: { emailRedirectTo: `${location.origin}/auth/callback` },
-            })
+          ? await supabase.auth.signUp(v)
           : await supabase.auth.signInWithPassword(v);
       if (result.error) throw result.error;
       if (mode === "signup" && !result.data.session)
-        setMessage(
-          "Account created. Check your inbox to verify your email, then sign in.",
+        throw new Error(
+          'Supabase still requires email confirmation. Turn off "Confirm email" in the project’s Authentication → Sign In / Providers settings, then sign in.',
         );
     } catch (e) {
-      setError(e);
+      setError(authError(e));
     } finally {
       setBusy(false);
     }
@@ -78,28 +76,7 @@ export function Auth() {
         "If an account exists for this address, a reset link has been requested. Check your inbox.",
       );
     } catch (e) {
-      setError(e);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function resendVerification() {
-    if (!supabase) return;
-    setBusy(true);
-    setError(undefined);
-    try {
-      const email = z.email().parse(form.getValues("email"));
-      const { error } = await supabase.auth.resend({
-        type: "signup",
-        email,
-        options: { emailRedirectTo: `${location.origin}/auth/callback` },
-      });
-      if (error) throw error;
-      setMessage(
-        "Verification email requested. Check your inbox for a fresh link.",
-      );
-    } catch (e) {
-      setError(e);
+      setError(authError(e));
     } finally {
       setBusy(false);
     }
@@ -217,14 +194,6 @@ export function Auth() {
             </Button>
           </form>
           <div className="auth-links">
-            {!!(message || error) && mode !== "forgot" && (
-              <button
-                disabled={busy || !configured}
-                onClick={resendVerification}
-              >
-                Resend verification email
-              </button>
-            )}
             <button
               onClick={() => {
                 setMode(mode === "signup" ? "signin" : "signup");
@@ -273,10 +242,11 @@ export function AuthCallback() {
           ? navigate("/")
           : setError(
               new Error(
-                "This verification link is invalid or expired. Request a new verification email from the sign-in screen.",
+                "This sign-in link is invalid or expired. Return to sign in with your email and password.",
               ),
             ),
-      );
+      )
+      .catch((e) => setError(authError(e)));
   }, [navigate, location.search]);
   return (
     <div className="center-page">
@@ -288,7 +258,7 @@ export function AuthCallback() {
           </Link>
         </>
       ) : (
-        <Loading label="Verifying your account…" />
+        <Loading label="Signing you in…" />
       )}
     </div>
   );
@@ -315,7 +285,7 @@ export function ResetPassword() {
             const { error } = await supabase!.auth.updateUser({
               password: v.password,
             });
-            if (error) throw error;
+            if (error) throw authError(error);
             navigate("/");
           }}
           submitLabel="Update password"
