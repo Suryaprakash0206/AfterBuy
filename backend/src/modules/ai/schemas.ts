@@ -2,7 +2,10 @@ import { z } from "zod";
 import {
   dateSchema,
   moneySchema,
+  quantitySchema,
   currencySchema,
+  coverageSchema,
+  coverageDates,
 } from "../../../../shared/domain.js";
 const nullable = z.string().nullable();
 export const transcriptionSchema = z.object({
@@ -23,6 +26,7 @@ export const extractionSchema = z.object({
       brand: nullable,
       model: nullable,
       serial_number: nullable,
+      specifications: nullable,
       quantity: nullable,
       unit_price: nullable,
       line_total: nullable,
@@ -31,10 +35,16 @@ export const extractionSchema = z.object({
   warranties: z.array(
     z.object({
       product_name: nullable,
-      kind: z.enum(["return", "manufacturer", "extended", "repair"]),
+      item_index: z.number().int().nonnegative().nullable(),
+      kind: z.enum(["return", "manufacturer", "extended", "repair"]).nullable(),
       provider: nullable,
       start_basis: nullable,
       duration: nullable,
+      duration_months: z.number().int().min(0).max(600).nullable(),
+      duration_days: z.number().int().min(0).max(36600).nullable(),
+      explicit_start: nullable,
+      explicit_end: nullable,
+      exclusions: nullable,
       terms: z.string(),
       page: z.number().int().nullable(),
       quote: z.string(),
@@ -68,19 +78,60 @@ export const reviewSchema = z
           brand: z.string().max(1000).nullable(),
           model: z.string().max(1000).nullable(),
           serial_number: z.string().max(1000).nullable(),
-          quantity: z
-            .string()
-            .regex(/^\d{1,7}(\.\d{1,4})?$/)
-            .refine((x) => Number(x) > 0),
+          specifications: z.string().max(5000).nullable().default(null),
+          quantity: quantitySchema,
           unit_price: moneySchema.nullable(),
           line_total: moneySchema.nullable(),
         }),
       )
       .min(1)
       .max(100),
+    warranties: z
+      .array(
+        z
+          .object({
+            item_index: z.number().int().nonnegative(),
+            kind: coverageSchema.shape.kind,
+            provider: z.string().max(160).nullable(),
+            basis: coverageSchema.shape.basis,
+            explicit_start: dateSchema.nullable(),
+            explicit_end: dateSchema.nullable(),
+            duration_months: z.number().int().min(0).max(600).nullable(),
+            duration_days: z.number().int().min(0).max(36600).nullable(),
+            conditions: z.string().max(5000).nullable(),
+            exclusions: z.string().max(5000).nullable(),
+            uncertainty: z.string().max(2000).nullable(),
+            confirmed: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(200)
+      .default([]),
     duplicate_acknowledged: z.boolean().default(false),
   })
-  .strict();
+  .strict()
+  .superRefine((review, ctx) => {
+    review.warranties.forEach((w, index) => {
+      const fail = (message: string) =>
+        ctx.addIssue({ code: "custom", path: ["warranties", index], message });
+      if (w.item_index >= review.items.length)
+        fail("Choose the product this warranty covers.");
+      if (w.duration_months != null && w.duration_days != null)
+        fail("Choose months or days, not both.");
+      try {
+        const dates = coverageDates(w, { purchase_date: review.purchase_date });
+        if (
+          w.confirmed &&
+          (!w.provider?.trim() || !dates.start_date || !dates.end_date)
+        )
+          fail(
+            "Confirmed warranties need a provider and known start and end dates. Otherwise save as unconfirmed.",
+          );
+      } catch {
+        fail("Coverage cannot end before its start date.");
+      }
+    });
+  });
 export const answerSchema = z.object({
   answer: z.string(),
   source_ids: z.array(z.string()),

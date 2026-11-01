@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { mkdir } from "node:fs/promises";
+import { productSchema } from "../../shared/domain";
 const w = "00000000-0000-4000-8000-000000000001",
   u = "00000000-0000-4000-8000-000000000002",
   p = "00000000-0000-4000-8000-000000000003",
@@ -9,7 +10,14 @@ const w = "00000000-0000-4000-8000-000000000001",
   c = "00000000-0000-4000-8000-000000000005";
 // MOCK INTEGRATIONS ONLY: auth, storage, extraction, and API responses are isolated browser fixtures.
 // Production code never imports this file. SQL and export functionality have separate real local tests.
-async function fixtures(page: Page) {
+async function fixtures(
+  page: Page,
+  options: {
+    scanStatus?: () => string;
+    scannerConfigured?: boolean;
+    invoiceWarranty?: boolean;
+  } = {},
+) {
   const now = new Date().toISOString();
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -151,6 +159,14 @@ async function fixtures(page: Page) {
       doc.status = "completed";
       doc.accepted_product_ids = [p];
       output = { product_ids: [p] };
+    } else if (path.endsWith(`/documents/${d}`) && method === "DELETE") {
+      if (json().delete_created_products) {
+        product = null;
+        coverage.length = 0;
+        serviceCase = null;
+      }
+      doc = null;
+      output = { ok: true, status: "deleted" };
     } else if (path.endsWith(`/documents/${d}`))
       output = {
         document: doc,
@@ -171,6 +187,9 @@ async function fixtures(page: Page) {
                 brand: "Maker",
                 model: "W1",
                 serial_number: null,
+                specifications: options.invoiceWarranty
+                  ? "8 kg, 1200 rpm"
+                  : null,
                 quantity: "1",
                 unit_price: "24000",
                 line_total: "24000",
@@ -184,13 +203,34 @@ async function fixtures(page: Page) {
                 origin: "extracted",
               },
             ],
-            warranties: [],
+            warranties: options.invoiceWarranty
+              ? [
+                  {
+                    item_index: 0,
+                    product_name: "Washer",
+                    kind: "manufacturer",
+                    provider: "Maker",
+                    start_basis: "purchase",
+                    duration_months: 12,
+                    duration_days: null,
+                    explicit_start: null,
+                    explicit_end: null,
+                    terms: "Manufacturing defects only",
+                    quote: "12 months from purchase",
+                    page: 1,
+                  },
+                ]
+              : [],
             warnings: [],
           },
         },
       };
     else if (path.endsWith(`/products/${p}/assistant`)) output = [];
-    else if (path.endsWith(`/products/${p}`))
+    else if (path.endsWith(`/products/${p}`) && method === "PATCH") {
+      const edits = productSchema.parse(json());
+      product = { ...product, ...edits, updated_at: now };
+      output = product;
+    } else if (path.endsWith(`/products/${p}`))
       output = {
         ...product,
         documents: doc ? [doc] : [],
@@ -293,6 +333,22 @@ async function fixtures(page: Page) {
       });
       return;
     }
+    if (path.endsWith(`/documents/${d}`) && method === "GET") {
+      const status = options.scanStatus?.() ?? "needs_review";
+      output.document = { ...output.document, status };
+      output.scanner = {
+        configured: options.scannerConfigured ?? true,
+        available: options.scannerConfigured ?? true,
+        reason: options.scannerConfigured === false ? "configuration" : null,
+      };
+      if (status === "queued") output.extraction = null;
+      if (status === "processing")
+        output.extraction = {
+          id: "fixture-extraction",
+          status: "processing",
+          result: null,
+        };
+    }
     await route.fulfill({ json: output });
   });
   return { bytes };
@@ -326,6 +382,106 @@ test("MOCK integrations: sign-up opens the app without an email-verification ste
   await expect(
     page.getByRole("heading", { name: "Welcome home, Alex." }),
   ).toBeVisible();
+});
+test("MOCK integrations: queued scan fills the open form and keeps edits through polling errors", async ({
+  page,
+}, info) => {
+  let scanStatus = "queued";
+  const { bytes } = await fixtures(page, { scanStatus: () => scanStatus });
+  await page.goto("/auth");
+  await page.getByLabel("Email address").fill("owner@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("link", { name: "Add a purchase" }).click();
+  await page.getByLabel("Choose document file").setInputFiles({
+    name: "test-receipt.pdf",
+    mimeType: "application/pdf",
+    buffer: bytes,
+  });
+  await page.getByRole("button", { name: "Upload & continue" }).click();
+  await expect(page.getByText(/Waiting to scan/)).toBeVisible();
+  await page.getByLabel("Seller", { exact: true }).fill("My corrected seller");
+  await page
+    .getByRole("button", { name: "Discard edits", exact: true })
+    .click();
+  await expect(page.getByRole("alertdialog")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByLabel("Seller", { exact: true })).toHaveValue(
+    "My corrected seller",
+  );
+  await page
+    .getByLabel("I checked these details against the original document.")
+    .check();
+  scanStatus = "processing";
+  await expect(page.getByText(/Scanning your document/)).toBeVisible();
+  await expect(page.getByLabel("Seller", { exact: true })).toHaveValue(
+    "My corrected seller",
+  );
+  const documentUrl = `**/api/v1/workspaces/*/documents/${d}`;
+  await page.route(documentUrl, (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        error: {
+          message: "Mock temporary scan connection failure",
+          code: "TEST_FAILURE",
+        },
+      },
+    }),
+  );
+  await expect(
+    page.getByText("Mock temporary scan connection failure"),
+  ).toBeVisible();
+  await expect(page.getByLabel("Seller", { exact: true })).toHaveValue(
+    "My corrected seller",
+  );
+  await page.unroute(documentUrl);
+  scanStatus = "needs_review";
+  await expect(page.getByLabel("Product name", { exact: true })).toHaveValue(
+    "Washer",
+  );
+  await expect(page.getByLabel("Model", { exact: true })).toHaveValue("W1");
+  await expect(page.getByLabel("Invoice number", { exact: true })).toHaveValue(
+    "TEST-001",
+  );
+  await expect(page.getByLabel("Seller", { exact: true })).toHaveValue(
+    "My corrected seller",
+  );
+  await expect(
+    page.getByLabel("I checked these details against the original document."),
+  ).not.toBeChecked();
+  await expect(
+    page.getByRole("button", { name: "Confirm & create products" }),
+  ).toBeDisabled();
+  await noOverflow(page);
+  await accessibility(page);
+  await mkdir(".local/qa", { recursive: true });
+  await page.screenshot({
+    path: `.local/qa/autofilled-review-${info.project.name}.png`,
+    fullPage: true,
+  });
+});
+test("MOCK integrations: missing scanner configuration is explicit", async ({
+  page,
+}) => {
+  const { bytes } = await fixtures(page, {
+    scanStatus: () => "queued",
+    scannerConfigured: false,
+  });
+  await page.goto("/auth");
+  await page.getByLabel("Email address").fill("owner@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("link", { name: "Add a purchase" }).click();
+  await page.getByLabel("Choose document file").setInputFiles({
+    name: "test-receipt.pdf",
+    mimeType: "application/pdf",
+    buffer: bytes,
+  });
+  await page.getByRole("button", { name: "Upload & continue" }).click();
+  await expect(page.getByText("Automatic scanning needs setup.")).toBeVisible();
+  await expect(page.getByLabel("Seller", { exact: true })).toHaveValue("");
+  await expect(page.getByText(/Waiting to scan/)).not.toBeVisible();
 });
 test("MOCK integrations: interrupted sign-in shows a useful error and can be retried", async ({
   page,
@@ -492,3 +648,385 @@ test("MOCK integrations: keyboard navigation, loading, errors and empty screens"
   ).toBeVisible();
   await page.getByRole("button", { name: "Try again" }).click();
 });
+
+test("MOCK integrations: invoice specifications and warranty are reviewed and submitted together", async ({
+  page,
+}) => {
+  const { bytes } = await fixtures(page, { invoiceWarranty: true });
+  await page.goto("/auth");
+  await page.getByLabel("Email address").fill("owner@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("link", { name: "Add a purchase" }).click();
+  await page.getByLabel("Choose document file").setInputFiles({
+    name: "invoice.pdf",
+    mimeType: "application/pdf",
+    buffer: bytes,
+  });
+  await page.getByRole("button", { name: "Upload & continue" }).click();
+  await expect(page.getByLabel("Specifications", { exact: true })).toHaveValue(
+    "8 kg, 1200 rpm",
+  );
+  await expect(page.getByLabel("Covered product")).toHaveValue("0");
+  await expect(page.getByLabel("Warranty months")).toHaveValue("12");
+  await expect(page.getByText(/Coverage dates:/)).toContainText("Jan 31, 2027");
+  const confirmed = page.getByLabel(
+    "I checked this warranty’s provider, terms and dates.",
+  );
+  await expect(confirmed).not.toBeChecked();
+  await confirmed.check();
+  await noOverflow(page);
+  await accessibility(page);
+  await page
+    .getByLabel("I checked these details against the original document.")
+    .check();
+  await page
+    .getByLabel("Specifications", { exact: true })
+    .fill("8 kg, 1200 rpm, white");
+  await expect(
+    page.getByRole("button", { name: "Confirm & create products" }),
+  ).toBeDisabled();
+  await page
+    .getByLabel("I checked these details against the original document.")
+    .check();
+  let invalidConfirmRequests = 0;
+  page.on("request", (req) => {
+    if (
+      req.url().endsWith(`/documents/${d}/confirm`) &&
+      req.method() === "POST"
+    )
+      invalidConfirmRequests++;
+  });
+  await page.getByRole("textbox", { name: /^Quantity/ }).fill("");
+  await page
+    .getByLabel("I checked these details against the original document.")
+    .check();
+  await page.getByRole("button", { name: "Confirm & create products" }).click();
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Enter a quantity greater than 0" }),
+  ).toBeVisible();
+  expect(invalidConfirmRequests).toBe(0);
+  await page.getByRole("textbox", { name: /^Quantity/ }).fill(" 1 ");
+  await page
+    .getByLabel("I checked these details against the original document.")
+    .check();
+  const request = page.waitForRequest(
+    (req) =>
+      req.url().endsWith(`/documents/${d}/confirm`) && req.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Confirm & create products" }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    items: [{ specifications: "8 kg, 1200 rpm, white", quantity: "1" }],
+    warranties: [
+      {
+        item_index: 0,
+        provider: "Maker",
+        duration_months: 12,
+        duration_days: null,
+        confirmed: true,
+      },
+    ],
+  });
+  await expect(
+    page.getByRole("heading", { name: "Washer", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("8 kg, 1200 rpm, white", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Edit details" }).click();
+  await expect(page.getByLabel("Specifications", { exact: true })).toHaveValue(
+    "8 kg, 1200 rpm, white",
+  );
+  await page.getByLabel("Product name", { exact: true }).fill("Updated washer");
+  const saved = page.waitForRequest(
+    (req) => req.url().endsWith(`/products/${p}`) && req.method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save product" }).click();
+  const edits = (await saved).postDataJSON();
+  expect(productSchema.safeParse(edits).success).toBe(true);
+  expect(edits).toMatchObject({
+    name: "Updated washer",
+    specifications: "8 kg, 1200 rpm, white",
+  });
+  for (const key of [
+    "id",
+    "workspace_id",
+    "created_at",
+    "updated_at",
+    "archived_at",
+    "documents",
+    "coverage",
+    "cases",
+    "timeline",
+  ])
+    expect(edits).not.toHaveProperty(key);
+  await expect(
+    page.getByRole("heading", { name: "Updated washer", exact: true }),
+  ).toBeVisible();
+});
+
+test("MOCK integrations: visual effects toggle persists and respects reduced motion", async ({
+  page,
+}, info) => {
+  await fixtures(page);
+  await page.goto("/auth");
+  await page.getByLabel("Email address").fill("owner@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  const toggle = page.getByRole("button", {
+    name: "Visual effects",
+    exact: true,
+  });
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  const card = page.locator(".metric").first();
+  await card.waitFor();
+  const bounds = await card.boundingBox();
+  await page.mouse.move(bounds!.x + 30, bounds!.y + 30);
+  if (info.project.name === "desktop") {
+    await expect(page.locator(".pointer-trail")).toHaveAttribute(
+      "data-visible",
+      "true",
+    );
+    await expect(card).toHaveAttribute("data-pointer-lit", "true");
+  } else {
+    await expect(page.locator(".pointer-trail")).toBeHidden();
+  }
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".pointer-trail")).toHaveCount(0);
+  await page.reload();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".pointer-trail")).toHaveCount(0);
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-visual-effects",
+    "off",
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await noOverflow(page);
+  await accessibility(page);
+});
+
+test("MOCK integrations: review drafts survive refresh and quick search opens saved products", async ({
+  page,
+}) => {
+  const { bytes } = await fixtures(page, { invoiceWarranty: true });
+  await page.goto("/auth");
+  await page.getByLabel("Email address").fill("owner@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Search products and shortcuts", exact: true })
+    .click();
+  await page.getByRole("link", { name: /Add a purchase/ }).click();
+  await page.getByLabel("Choose document file").setInputFiles({
+    name: "draft.pdf",
+    mimeType: "application/pdf",
+    buffer: bytes,
+  });
+  await page.getByRole("button", { name: "Upload & continue" }).click();
+  await expect(page.getByLabel("Seller", { exact: true })).toHaveValue(
+    "Test Store",
+  );
+  await page.getByLabel("Seller", { exact: true }).fill("My corrected seller");
+  await page
+    .getByLabel("I checked this warranty’s provider, terms and dates.")
+    .check();
+  await expect(
+    page.getByText("Draft saved on this browser.", { exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("Seller", { exact: true })).toHaveValue(
+    "My corrected seller",
+  );
+  await expect(
+    page.getByLabel("I checked this warranty’s provider, terms and dates."),
+  ).not.toBeChecked();
+  await expect(
+    page.getByLabel("I checked these details against the original document."),
+  ).not.toBeChecked();
+  await page.getByLabel("Currency", { exact: false }).fill("inr");
+  await page
+    .getByLabel("I checked these details against the original document.")
+    .check();
+  const confirmation = page.waitForRequest(
+    (r) => r.url().endsWith(`/documents/${d}/confirm`) && r.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Confirm & create products" }).click();
+  expect((await confirmation).postDataJSON()).toMatchObject({
+    seller: "My corrected seller",
+    currency: "INR",
+  });
+  await expect(
+    page.getByRole("heading", { name: "Washer", exact: true }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      Object.keys(localStorage).filter((key) =>
+        key.startsWith("afterbuy.review-draft:"),
+      ),
+    ),
+  ).toEqual([]);
+  await page.keyboard.press("Control+k");
+  await page
+    .getByRole("textbox", { name: "Search product names" })
+    .fill("Washer");
+  await expect(page.getByRole("link", { name: /Washer/ })).toBeVisible();
+  await noOverflow(page);
+  await accessibility(page);
+  await page.getByRole("textbox", { name: "Search product names" }).focus();
+  await page.keyboard.press("ArrowUp");
+  await expect(
+    page.getByRole("link", { name: /View all 1 matching products/ }),
+  ).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("textbox", { name: "Search products", exact: true }),
+  ).toHaveValue("Washer");
+  await page.keyboard.press("Control+k");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("MOCK integrations: unavailable invoice offers a working upload recovery", async ({
+  page,
+}) => {
+  await fixtures(page);
+  await page.goto("/auth");
+  await page.getByLabel("Email address").fill("owner@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("link", { name: "Add a purchase" }).waitFor();
+  await page.route(`**/api/v1/workspaces/*/documents/${d}`, (route) =>
+    route.fulfill({
+      status: 404,
+      json: { error: { code: "NOT_FOUND", message: "Record not found." } },
+    }),
+  );
+  await page.goto(`/documents/${d}/review`);
+  await expect(
+    page.getByRole("heading", { name: "Document unavailable", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Upload invoice again" }).click();
+  await expect(page.getByLabel("Choose document file")).toBeAttached();
+  await expect(
+    page.getByRole("heading", { name: "Add a document" }),
+  ).toBeVisible();
+});
+
+test("MOCK integrations: compact phone and tablet layouts keep navigation and search usable", async ({
+  page,
+}, info) => {
+  await fixtures(page);
+  await page.goto("/auth");
+  await page.getByLabel("Email address").fill("owner@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome home, Alex." }),
+  ).toBeVisible();
+  for (const width of [320, 768]) {
+    await page.setViewportSize({ width, height: 740 });
+    await noOverflow(page);
+    await page
+      .getByRole("button", {
+        name: "Search products and shortcuts",
+        exact: true,
+      })
+      .click();
+    await expect(
+      page.getByRole("textbox", { name: "Search product names" }),
+    ).toBeFocused();
+    await noOverflow(page);
+    await accessibility(page);
+    await mkdir(".local/qa", { recursive: true });
+    await page.screenshot({
+      path: `.local/qa/final-search-${width}-${info.project.name}.png`,
+      fullPage: true,
+    });
+    await page
+      .getByRole("button", { name: "Close dialog", exact: true })
+      .click();
+    if (width === 320) {
+      await page.getByRole("button", { name: "Open navigation" }).click();
+      await noOverflow(page);
+      await page
+        .getByRole("dialog")
+        .getByRole("link", { name: "Documents", exact: true })
+        .click();
+      await expect(
+        page.getByRole("heading", { name: "Your documents", exact: true }),
+      ).toBeVisible();
+    }
+  }
+});
+
+for (const deleteProducts of [false, true]) {
+  test(`MOCK integrations: deleting a document ${deleteProducts ? "also removes created products when selected" : "keeps products by default"}`, async ({
+    page,
+  }) => {
+    const { bytes } = await fixtures(page);
+    await page.goto("/auth");
+    await page.getByLabel("Email address").fill("owner@example.test");
+    await page.getByLabel("Password", { exact: true }).fill("test-password");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("link", { name: "Add a purchase" }).click();
+    await page
+      .getByLabel("Choose document file")
+      .setInputFiles({
+        name: "delete-test.pdf",
+        mimeType: "application/pdf",
+        buffer: bytes,
+      });
+    await page.getByRole("button", { name: "Upload & continue" }).click();
+    await expect(page.getByLabel("Product name", { exact: true })).toHaveValue(
+      "Washer",
+    );
+    await page
+      .getByLabel("I checked these details against the original document.")
+      .check();
+    await page
+      .getByRole("button", { name: "Confirm & create products" })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Washer", exact: true }),
+    ).toBeVisible();
+    await page.goto(`/documents/${d}/review`);
+    await page
+      .getByRole("button", {
+        name: deleteProducts
+          ? "Delete document and created products"
+          : "Delete document",
+        exact: true,
+      })
+      .click();
+    const deletion = page.waitForRequest(
+      (req) =>
+        req.url().endsWith(`/documents/${d}`) && req.method() === "DELETE",
+    );
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Confirm", exact: true })
+      .click();
+    expect((await deletion).postDataJSON()).toEqual({
+      delete_created_products: deleteProducts,
+    });
+    await expect(
+      page.getByRole("heading", { name: "Your documents", exact: true }),
+    ).toBeVisible();
+    await page.goto("/products");
+    await expect(
+      page.getByText(deleteProducts ? "0 products" : "1 products", {
+        exact: true,
+      }),
+    ).toBeVisible();
+  });
+}

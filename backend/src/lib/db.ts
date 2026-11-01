@@ -37,7 +37,11 @@ export async function result<T>(
 ): Promise<NonNullable<T>> {
   const { data, error } = await query;
   if (error) {
-    if (error.code === "PGRST205" || error.code === "42P01")
+    if (
+      ["PGRST205", "PGRST202", "PGRST204", "42P01", "42703"].includes(
+        error.code,
+      )
+    )
       throw new AppError(
         503,
         "MIGRATIONS_REQUIRED",
@@ -72,6 +76,6 @@ export async function result<T>(
   return data as NonNullable<T>;
 }
 export const productFields =
-  "id,workspace_id,name,category,brand,model,serial_number,seller,purchase_date,delivery_date,price::text,currency,location,notes,archived_at,created_at,updated_at";
+  "id,workspace_id,name,category,brand,model,serial_number,specifications,seller,purchase_date,delivery_date,price::text,currency,location,notes,archived_at,created_at,updated_at";
 export const eventFields =
   "id,workspace_id,case_id,kind,note,occurred_on,amount::text,currency,status,replacement_details,created_at";

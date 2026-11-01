@@ -40,3 +40,25 @@ Updated 2026-10-24.
 - Start Docker Desktop, Redis and the worker. Docker's engine was unavailable during implementation, so live queue/downtime recovery was not exercised.
 - Live new-account sign-up/password reset, hosted Storage upload/download, AI extraction/chat/embeddings and optional Resend delivery need configured isolated integration checks. Existing-account sign-in is verified; no external email was sent.
 - See ARCHITECTURE.md for list-size bounds, Latin-font PDF limitation and deployment/operational work outside this local delivery.
+
+
+## Invoice enhancement — 2026-10-25
+
+- Extended invoice extraction with specifications and structured warranty duration, dates, provider, exclusions and item associations.
+- Added editable per-product warranty review, explicit date confirmation, date previews, safe late-result merging and missing-information handling.
+- Added migration `202610250001_invoice_product_warranties.sql`, a guarded API entry point, and atomic/idempotent persistence of products, invoice lines and sourced coverage. Existing installations must apply this migration; it has not been applied to the hosted database by this change.
+- Product specifications are available in product details/editing and support packages. Narrowed the test coverage ignore rule so the existing backend coverage routes are no longer excluded from Git.
+- Verification: 72 local tests passed, including actual PGlite migration execution, warranty linkage, missing dates, rollback and retry checks. Typecheck, lint and production builds passed. The new invoice review passed desktop/mobile browser and accessibility checks with mocked external services.
+- Live OCR/provider access remains unverified and requires the missing backend credentials, Redis and worker setup. No credentials were added and no real invoices were sent to an external provider during this work.
+
+
+## Groq scanner connection — 2026-10-25
+
+- Connected the configured Groq key without exposing it. Verified the account models endpoint and selected `qwen/qwen3.8-27b` for text extraction and vision.
+- Added strict validated Chat Completions output, one-page-at-a-time PDF rasterization, bounded image dimensions, provider-specific errors and a scan time limit. OpenAI remains optional for the separate assistant/embedding features.
+- Configured local inline scanning with one concurrent job and durable PostgreSQL recovery, so invoice scanning no longer requires Docker/Redis on this machine. The queue/worker option remains supported.
+- Live generated scanned PDF test extracted the expected product name, specifications, INR 1500.00 price and 12-month manufacturer warranty. No personal invoice was used for this probe.
+- 85 automated tests and four focused desktop/mobile browser checks passed. Production build and lint passed before the final server startup correction; final checks repeated afterward.
+- Supabase now exposes the specifications column and confirmation RPC. The RPC probe with invalid IDs returned the expected editor-access denial without creating records. Browser access to the Supabase dashboard was declined; no dashboard change was performed by this agent.
+- Restarted the older API and verified `extraction: true` on the running service. The existing frontend remains on port 5173. Users can upload a new invoice or retry extraction for an older failed scan.
+- Installation audit reported existing high-severity advisories in body-parser and multer; those package versions were not changed by this feature.

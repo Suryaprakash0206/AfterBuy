@@ -59,6 +59,7 @@ export async function buildPackage(
     name: p.name,
     brand: p.brand,
     model: p.model,
+    specifications: p.specifications,
     serial_number: options.include_serial ? p.serial_number : undefined,
     seller: p.seller,
     purchase_date: p.purchase_date,

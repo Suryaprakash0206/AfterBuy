@@ -86,6 +86,10 @@ Use the backend example file for the complete settings. No model name is assumed
 
 Restart the API and worker after changes. API/worker keys never use a `VITE_` prefix. Review source data handling with your chosen provider before uploading sensitive documents. If AI is absent, enter invoice and coverage information manually; the application does not synthesize missing fields.
 
+Automatic receipt scanning needs `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY` and `OPENAI_EXTRACTION_MODEL` in **backend/.env**, plus Redis and `npm run worker`. Upload a PDF or a receipt photo with **Invoice or receipt** selected. Upload completion immediately requests a background scan; PostgreSQL recovery picks up saved uploads after downtime. The review page shows whether the scanner is unconfigured, offline, waiting or processing. Extracted seller, invoice number, date, currency, item details and totals fill the open form automatically, including when results arrive after you opened it. Existing edits are preserved, and recording products still requires confirmation. If you edited product rows, you can explicitly choose **Use scanned product list** after reviewing the replacement warning. A temporary polling failure leaves the draft visible.
+
+The extraction and queue unit tests and browser scan tests use explicitly mocked provider results. They verify the integration logic, not OCR accuracy or live model access. Chat/embedding models are not required just to extract invoice fields.
+
 For optional reminder email, set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, and a verified `EMAIL_FROM`, then enable email in account preferences. This adapter is independent of Supabase Auth's SMTP setup. `accepted` means the provider accepted the email; there is no webhook integration claiming inbox delivery. No email was sent during implementation or testing.
 
 ## Verification commands
@@ -123,3 +127,23 @@ For built local execution: `npm run build`, then `npm run start -w backend`, `np
 `GET /api/v1/health` reports the API process; `GET /api/v1/ready` checks the database endpoint, and `/api/v1/config` reports configured capabilities without revealing credentials. Structured logs include request/job identifiers, not tokens or receipt contents. Keep `.env`, `.local`, and generated build/test output out of Git.
 
 See [architecture and boundaries](docs/ARCHITECTURE.md), [REST API](docs/API.md), and [progress and verification](docs/PROGRESS.md) for implementation details and genuine limitations.
+
+
+## Invoice product and warranty review (2026-10-25)
+
+Invoice scanning now extracts product specifications and structured warranty terms in addition to purchase details. The review screen lets the user correct these fields, assign each warranty to its product, inspect calculated dates, and explicitly confirm coverage. Unknown providers, dates and terms are not invented. Incomplete warranties can be saved unconfirmed; no warranty is created when none is stated or entered. Product rows and warranty mappings are preserved together when a scan arrives after manual edits.
+
+Confirmation saves products, specifications, invoice lines, document links and warranties in one database transaction. Retrying confirmation returns the original products without duplicating coverage. Specifications appear on the product page and in support summaries. The existing quantity and unit-price fields remain stored on invoice lines; product cost is the line total, never the whole invoice total.
+
+**Existing installations must apply only `supabase/migrations/202610250001_invoice_product_warranties.sql` before starting the updated app.** The regenerated `supabase/setup.sql` is for fresh installations only. This code change does not apply migrations to a hosted project or configure credentials. Live scanning still requires the backend service-role key, extraction model/API key, Redis, and the worker. Tests use mocked provider responses and local PostgreSQL; they do not establish live OCR accuracy.
+
+
+## Groq invoice scanning (2026-10-25)
+
+For Groq scanning, set `GROQ_API_KEY`, `EXTRACTION_PROVIDER=groq`, `GROQ_EXTRACTION_MODEL=qwen/qwen3.8-27b`, and `GROQ_VISION_MODEL=qwen/qwen3.8-27b` in **backend/.env**. These model IDs were checked against the account's live models endpoint. Groq requests use its Chat Completions endpoint with strict schema output and local validation. Digital PDF text is extracted locally; photographs and scanned PDF pages use vision. PDF pages are rendered locally into bounded JPEG images and sent one at a time, preserving page numbers. No OpenAI API key is needed for invoice extraction in this mode.
+
+`DOCUMENT_PROCESSING_MODE=inline` runs bounded invoice scans in the API process and recovers queued uploads every 10 seconds. Start `npm run dev` and keep it running; Redis and the separate worker are not needed for **invoice scanning** in this mode. The Supabase service-role credential is still required. Interrupted processing leases are recovered after 15 minutes; failed scans remain visible for explicit retry. The local configuration uses one concurrent scan to reduce free-tier rate-limit pressure. Changing to `DOCUMENT_PROCESSING_MODE=queue` retains the existing Redis/worker deployment path.
+
+Groq quota errors are shown on the review page. Configuration does not guarantee remaining quota. Assistant embeddings/chat, reminder delivery and storage cleanup retain their separate worker/provider requirements. Apply the pending invoice database migration before confirming products and warranties.
+
+Verification included a real Groq call using a generated, non-personal scanned invoice: product name, specifications, price and 12-month warranty were extracted successfully. Automated tests use mocked Groq responses and real local PDF rendering.

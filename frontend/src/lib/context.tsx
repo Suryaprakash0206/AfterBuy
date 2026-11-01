@@ -8,6 +8,7 @@ import {
 import type { Session } from "@supabase/supabase-js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, supabase } from "./api";
+import { clearReviewDrafts } from "./review-drafts";
 type AppContextValue = {
   session: Session | null;
   authLoading: boolean;
@@ -42,7 +43,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
       setAuthLoading(false);
-      if (event === "SIGNED_OUT") client.clear();
+      if (event === "SIGNED_OUT") {
+        clearReviewDrafts();
+        client.clear();
+      }
       if (event === "PASSWORD_RECOVERY") window.location.assign("/auth/reset");
     });
     return () => subscription.unsubscribe();

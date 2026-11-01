@@ -22,6 +22,16 @@ import { OpenAIProvider } from "../backend/src/modules/ai/provider.js";
 import { resolveAnswer } from "../backend/src/modules/ai/schemas.js";
 describe("OpenAI adapter — mocked external SDK", () => {
   beforeEach(() => vi.clearAllMocks());
+  it.each(["image/jpeg", "image/png", "application/pdf"])("reads %s through the vision-capable extraction model (mock response)", async (mime) => {
+    sdk.parse.mockResolvedValue({status:"completed",output_parsed:{pages:[{page:1,text:"Test invoice: Kettle 81.00 USD"}]}});
+    expect(await new OpenAIProvider().transcribe(Buffer.from('mock-file-bytes'),mime)).toEqual([{page:1,text:"Test invoice: Kettle 81.00 USD"}]);
+    const request=sdk.parse.mock.calls[0][0];
+    expect(request.model).toBe('mock-extraction');
+    expect(request.store).toBe(false);
+    expect(request.input[0].content[0].type).toBe(mime==='application/pdf'?'input_file':'input_image');
+    expect(request.text.format.type).toBe('json_schema');
+    expect(request.tools).toBeUndefined();
+  });
   it("rejects truncated extraction rather than accepting partial records", async () => {
     sdk.parse.mockResolvedValue({ status: "incomplete", output_parsed: {} });
     await expect(

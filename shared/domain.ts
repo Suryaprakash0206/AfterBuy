@@ -13,6 +13,13 @@ export const dateSchema = z
       return false;
     }
   }, "Enter a valid calendar date");
+export const quantitySchema = z
+  .string()
+  .trim()
+  .refine(
+    (value) => /^\d{1,7}(\.\d{1,4})?$/.test(value) && Number(value) > 0,
+    "Enter a quantity greater than 0, such as 1 or 1.5 (up to four decimal places).",
+  );
 export const moneySchema = z
   .string()
   .regex(
@@ -30,6 +37,7 @@ export const productSchema = z
     brand: optionalText,
     model: optionalText,
     serial_number: optionalText,
+    specifications: z.string().max(5000).nullable().optional(),
     seller: optionalText,
     purchase_date: dateSchema.nullable().optional(),
     delivery_date: dateSchema.nullable().optional(),

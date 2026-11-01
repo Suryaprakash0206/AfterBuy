@@ -26,23 +26,28 @@ export function Dashboard() {
   const d = q.data;
   return (
     <>
-      <PageHeader
-        eyebrow="A CLEARER PICTURE OF WHAT YOU OWN"
-        title={
-          me?.profile.display_name
-            ? `Welcome home, ${me.profile.display_name.split(" ")[0]}.`
-            : "Everything in its place."
-        }
-        description="Your purchases, protected and organised. Here’s what matters next."
-        action={
-          canEdit && (
-            <Link className="btn btn-primary" to="/documents/upload">
-              <Upload size={17} />
-              Add a purchase
-            </Link>
-          )
-        }
-      />
+      <div className="dashboard-hero">
+        <div className="hero-orbit" aria-hidden="true">
+          <ShieldCheck strokeWidth={0.8} />
+        </div>
+        <PageHeader
+          eyebrow="A CLEARER PICTURE OF WHAT YOU OWN"
+          title={
+            me?.profile.display_name
+              ? `Welcome home, ${me.profile.display_name.split(" ")[0]}.`
+              : "Everything in its place."
+          }
+          description="Your purchases, protected and organised. Here’s what matters next."
+          action={
+            canEdit && (
+              <Link className="btn btn-primary" to="/documents/upload">
+                <Upload size={17} />
+                Add a purchase
+              </Link>
+            )
+          }
+        />
+      </div>
       <QueryState query={q}>
         {d && (
           <>

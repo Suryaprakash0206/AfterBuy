@@ -139,7 +139,7 @@ export function CoverageList({
                       ? "SELLER RETURN POLICY"
                       : `${c.kind} WARRANTY`}
                   </p>
-                  <h3>{c.provider}</h3>
+                  <h3>{c.provider || "Provider not provided"}</h3>
                   {!product && (
                     <Link to={`/products/${c.product_id}`}>
                       {c.product?.name}

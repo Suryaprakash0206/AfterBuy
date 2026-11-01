@@ -1,15 +1,17 @@
 import { Router } from "express";
 import multer from "multer";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { idSchema } from "../../../../shared/domain.js";
 import { config } from "../../config.js";
-import { result, productFields } from "../../lib/db.js";
+import { result, productFields, adminClient } from "../../lib/db.js";
 import { editAccess } from "../../lib/auth.js";
 import { AppError } from "../../lib/errors.js";
 import { inspectFile, safeFilename } from "./service.js";
 import { reviewSchema } from "../ai/schemas.js";
 import { rateLimit } from "express-rate-limit";
+import { enqueueDocument, scannerStatus } from "./dispatch.js";
+import { registerUpload } from "./registration.js";
+import { purgeDeletedDocument } from "./deletion.js";
 export const documentRoutes = Router({ mergeParams: true });
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -57,19 +59,16 @@ documentRoutes.post(
       })
       .parse(req.body);
     const inspected = await inspectFile(req.file.buffer, req.file.mimetype);
-    const registered = await result(
-      req.db.rpc("register_document", {
-        w: req.workspaceId,
-        p_id: randomUUID(),
-        p_name: safeFilename(req.file.originalname),
-        p_mime: inspected.mime,
-        p_size: req.file.size,
-        p_pages: inspected.pages,
-        p_hash: inspected.hash,
-        p_kind: b.kind,
-        p_product: b.product_id ?? null,
-      }),
-    );
+    const registered = await registerUpload(req.db, {
+      w: req.workspaceId,
+      p_name: safeFilename(req.file.originalname),
+      p_mime: inspected.mime,
+      p_size: req.file.size,
+      p_pages: inspected.pages,
+      p_hash: inspected.hash,
+      p_kind: b.kind,
+      p_product: b.product_id ?? null,
+    });
     const d = registered.document;
     if (registered.duplicate && d.upload_complete) {
       if (b.product_id)
@@ -80,6 +79,7 @@ documentRoutes.post(
             p_product: b.product_id,
           }),
         );
+      if (d.status === "queued") void enqueueDocument(d.id);
       res.status(200).json(registered);
       return;
     }
@@ -104,6 +104,7 @@ documentRoutes.post(
     await result(
       req.db.rpc("finish_upload", { w: req.workspaceId, p_id: d.id }),
     );
+    void enqueueDocument(d.id);
     res.status(201).json({
       ...registered,
       document: { ...d, status: "queued", upload_complete: true },
@@ -130,7 +131,11 @@ documentRoutes.get("/documents/:id", async (req, res) => {
       .order("created_at", { ascending: false })
       .limit(1),
   );
-  res.json({ document, extraction: extraction[0] ?? null });
+  res.json({
+    document,
+    extraction: extraction[0] ?? null,
+    scanner: document.status === "completed" ? null : await scannerStatus(),
+  });
 });
 documentRoutes.post("/documents/:id/download", async (req, res) => {
   const d = await result(
@@ -154,12 +159,14 @@ documentRoutes.post("/documents/:id/download", async (req, res) => {
   res.json({ url: data!.signedUrl, expires_in: 120 });
 });
 documentRoutes.post("/documents/:id/retry", editAccess, async (req, res) => {
+  const id = idSchema.parse(req.params.id);
   await result(
     req.db.rpc("retry_document", {
       w: req.workspaceId,
-      p_id: idSchema.parse(req.params.id),
+      p_id: id,
     }),
   );
+  void enqueueDocument(id);
   res.json({ ok: true });
 });
 documentRoutes.post("/documents/:id/reindex", editAccess, async (req, res) => {
@@ -215,7 +222,7 @@ documentRoutes.post("/documents/:id/confirm", editAccess, async (req, res) => {
       error: {
         code: "POSSIBLE_DUPLICATE",
         message:
-          "Similar purchases exist. Confirm that these are separate purchases before continuing.",
+          "Products with the same name and purchase date already exist. Deleting a document keeps saved products unless you choose to delete them too. Confirm only if these are separate purchases.",
         requestId: req.requestId,
       },
       duplicates,
@@ -224,7 +231,7 @@ documentRoutes.post("/documents/:id/confirm", editAccess, async (req, res) => {
   }
   res.json({
     product_ids: await result(
-      req.db.rpc("confirm_extraction", {
+      req.db.rpc("confirm_invoice_details", {
         w: req.workspaceId,
         p_document: id,
         p_review: b,
@@ -233,11 +240,43 @@ documentRoutes.post("/documents/:id/confirm", editAccess, async (req, res) => {
   });
 });
 documentRoutes.delete("/documents/:id", editAccess, async (req, res) => {
+  const id = idSchema.parse(req.params.id);
+  const { delete_created_products } = z
+    .object({ delete_created_products: z.boolean().default(false) })
+    .strict()
+    .parse(req.body ?? {});
+  const document = await result(
+    req.db
+      .from("documents")
+      .select("accepted_product_ids")
+      .eq("workspace_id", req.workspaceId)
+      .eq("id", id)
+      .maybeSingle(),
+  );
+  if (!document) {
+    res.json({ ok: true, status: "deleted" });
+    return;
+  }
+  // Only the products originally created by this invoice, never arbitrary linked products.
+  if (delete_created_products && document.accepted_product_ids?.length) {
+    await result(
+      req.db
+        .from("products")
+        .delete()
+        .eq("workspace_id", req.workspaceId)
+        .in("id", document.accepted_product_ids),
+    );
+  }
   await result(
     req.db.rpc("mark_document_deleting", {
       w: req.workspaceId,
-      p_id: idSchema.parse(req.params.id),
+      p_id: id,
     }),
   );
-  res.status(202).json({ ok: true, status: "deleting" });
+  try {
+    await purgeDeletedDocument(adminClient(), req.workspaceId, id);
+    res.json({ ok: true, status: "deleted" });
+  } catch {
+    res.status(202).json({ ok: true, status: "deleting" });
+  }
 });

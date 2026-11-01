@@ -36,7 +36,7 @@ Prefix every path below with `/workspaces/:workspaceId`. A viewer may read/expor
 | DELETE | `/products/:id` | Hard delete with documented cascading relations. |
 | GET | `/documents` | Latest 500 non-deleting document records and real processing/index states. |
 | POST | `/documents` | Multipart `file`, `kind`, optional `product_id`; real signature, size and page checks. Returns `{document,duplicate}`. |
-| GET | `/documents/:id` | `{document,extraction}` including original suggestions and saved review. |
+| GET | `/documents/:id` | `{document,extraction,scanner}` including original suggestions and saved review. Scanner reports `configured`, `available` (connected queue worker), and `reason: configuration|queue|worker|null`; null after completion. Availability does not guarantee provider success. |
 | POST | `/documents/:id/download` | Empty body → `{url,expires_in:120}` after permission checks. |
 | POST | `/documents/:id/confirm` | Confirm reviewed invoice and create all line-item products atomically; details below. |
 | POST | `/documents/:id/complete` | Mark a non-invoice document reviewed. Coverage stays separate. |
@@ -118,3 +118,8 @@ Omit `format` for preview and omit `message` to generate the deterministic draft
 ## Operational limits
 
 The API applies 180 requests/minute per IP, six uploads/minute per authenticated user, and configurable AI requests/minute per user. AI usage reservations are durable and workspace-scoped. Limits are local to one API process except the database budget. HTTP bodies are capped at 1 MB; uploads at configurable maximum 20 MB/40 pages. Respect `Retry-After` when returned and surface actionable errors to the user. AI/worker credential configuration never belongs in the frontend.
+
+
+### Invoice confirmation additions
+
+`POST /workspaces/:workspaceId/documents/:id/confirm` accepts nullable `items[].specifications` and an optional `warranties` array (default `[]` for older callers). Each warranty contains `item_index` (zero-based reviewed product index), `kind`, nullable `provider`, `basis`, nullable `explicit_start`, `explicit_end`, `duration_months`, `duration_days`, `conditions`, `exclusions`, `uncertainty`, and boolean `confirmed`. Only one duration unit may be supplied. A confirmed warranty requires a provider and resolvable start/end dates; incomplete terms remain unconfirmed. Invalid product associations are rejected. The server saves warranties with their product and source invoice in the same idempotent confirmation transaction. Apply migration `202610250001_invoice_product_warranties.sql` first.

@@ -7,6 +7,8 @@ process.env.VITE_API_BASE_URL = "/api/v1";
 const server = await createServer({
   root: "frontend",
   configFile: "frontend/vite.config.ts",
+  // Tests run alongside the user's dev server; never replace its optimized deps.
+  cacheDir: "node_modules/.vite-e2e",
   server: { host: "127.0.0.1", port: 5174, strictPort: true },
 });
 await server.listen();

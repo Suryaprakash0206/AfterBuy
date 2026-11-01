@@ -244,27 +244,53 @@ describe("document privacy and transactional confirmation", () => {
   const review = {
     seller: "Store",
     invoice_number: "TEST-001",
+    warranties: [
+      {
+        item_index: 0,
+        kind: "manufacturer",
+        provider: "Maker",
+        basis: "purchase",
+        duration_months: 12,
+        confirmed: true,
+        conditions: "Manufacturing defects only",
+      },
+      {
+        item_index: 1,
+        kind: "extended",
+        provider: null,
+        basis: "explicit",
+        duration_months: 24,
+        confirmed: false,
+        conditions: "Two-year cover; start date not stated",
+      },
+    ],
     purchase_date: "2025-03-10",
     currency: "INR",
     subtotal: "100",
     tax: "10",
     total: "110",
     items: [
-      { name: "Toaster", quantity: "1", unit_price: "60", line_total: "60" },
+      {
+        name: "Toaster",
+        specifications: "800 W, two slots",
+        quantity: "1",
+        unit_price: "60",
+        line_total: "60",
+      },
       { name: "Kettle", quantity: "1", unit_price: "40", line_total: "40" },
     ],
   };
   it("confirms all invoice items atomically and is safe on retries", async () => {
     await as(owner);
     const first = (
-      await row("select confirm_extraction($1,$2,$3) ids", [
+      await row("select confirm_invoice_details($1,$2,$3) ids", [
         w,
         doc,
         JSON.stringify(review),
       ])
     ).ids;
     const retry = (
-      await row("select confirm_extraction($1,$2,$3) ids", [
+      await row("select confirm_invoice_details($1,$2,$3) ids", [
         w,
         doc,
         JSON.stringify(review),
@@ -272,6 +298,32 @@ describe("document privacy and transactional confirmation", () => {
     ).ids;
     expect(first).toEqual(retry);
     expect(first).toHaveLength(2);
+    expect(
+      (await row("select specifications from products where id=$1", [first[0]]))
+        .specifications,
+    ).toBe("800 W, two slots");
+    const saved = (
+      await db.query<any>(
+        "select product_id,source_document_id,provider,start_date::text,end_date::text,confirmed from coverage where source_document_id=$1 order by confirmed desc",
+        [doc],
+      )
+    ).rows;
+    expect(saved).toHaveLength(2);
+    expect(saved[0]).toMatchObject({
+      product_id: first[0],
+      source_document_id: doc,
+      provider: "Maker",
+      start_date: "2025-03-10",
+      end_date: "2026-03-10",
+      confirmed: true,
+    });
+    expect(saved[1]).toMatchObject({
+      product_id: first[1],
+      provider: "",
+      start_date: null,
+      end_date: null,
+      confirmed: false,
+    });
     expect(
       (
         await row(
@@ -311,7 +363,7 @@ describe("document privacy and transactional confirmation", () => {
     );
     await as(owner);
     await expect(
-      db.query("select confirm_extraction($1,$2,$3)", [
+      db.query("select confirm_invoice_details($1,$2,$3)", [
         w,
         d.id,
         JSON.stringify({
@@ -320,6 +372,50 @@ describe("document privacy and transactional confirmation", () => {
         }),
       ]),
     ).rejects.toThrow();
+    for (const warranties of [
+      [
+        {
+          item_index: 9,
+          kind: "manufacturer",
+          provider: "Maker",
+          basis: "purchase",
+          duration_months: 12,
+        },
+      ],
+      [
+        {
+          item_index: 0,
+          kind: "manufacturer",
+          provider: "Maker",
+          basis: "purchase",
+          duration_months: 12,
+          confirmed: true,
+        },
+        {
+          item_index: 1,
+          kind: "manufacturer",
+          provider: "Maker",
+          basis: "explicit",
+          confirmed: true,
+        },
+      ],
+    ]) {
+      await expect(
+        db.query("select confirm_invoice_details($1,$2,$3)", [
+          w,
+          d.id,
+          JSON.stringify({ ...review, warranties }),
+        ]),
+      ).rejects.toThrow();
+    }
+    expect(
+      (
+        await row(
+          "select count(*)::int n from coverage where source_document_id=$1",
+          [d.id],
+        )
+      ).n,
+    ).toBe(0);
     expect(
       (
         await row("select count(*)::int n from invoices where document_id=$1", [

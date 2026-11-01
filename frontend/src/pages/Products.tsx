@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Link,
   useNavigate,
@@ -74,6 +74,13 @@ export const productFields: FormField[] = [
   { name: "brand", label: "Brand", nullable: true },
   { name: "model", label: "Model", nullable: true },
   { name: "serial_number", label: "Serial number", nullable: true },
+  {
+    name: "specifications",
+    label: "Specifications",
+    type: "textarea",
+    nullable: true,
+    full: true,
+  },
   { name: "seller", label: "Purchased from", nullable: true },
   {
     name: "purchase_date",
@@ -103,11 +110,13 @@ export const productFields: FormField[] = [
   },
 ];
 export function Products() {
-  const [search, setSearch] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const search = searchParams.get("search") || "";
   const [sort, setSort] = useState("newest");
   const [category, setCategory] = useState("");
   const [archived, setArchived] = useState(false);
   const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [search]);
   const [view, setView] = useState("grid");
   const { canEdit } = useApp();
   const q = useWorkspaceQuery(
@@ -136,7 +145,10 @@ export function Products() {
             placeholder="Find a product…"
             value={search}
             onChange={(e) => {
-              setSearch(e.target.value);
+              setSearchParams(
+                e.target.value ? { search: e.target.value } : {},
+                { replace: true },
+              );
               setPage(1);
             }}
           />
@@ -300,7 +312,9 @@ export function ProductEditor() {
         fields={productFields}
         values={
           id
-            ? q.data
+            ? Object.fromEntries(
+                productFields.map(({ name }) => [name, q.data?.[name]]),
+              )
             : {
                 name: "",
                 category: "Other",
@@ -423,6 +437,10 @@ export function ProductDetail() {
                           </div>
                         ))}
                       </dl>
+                      <div className="product-notes">
+                        <h3>Specifications</h3>
+                        <p>{p.specifications || "Not provided"}</p>
+                      </div>
                       {p.notes && (
                         <div className="product-notes">
                           <h3>Notes</h3>

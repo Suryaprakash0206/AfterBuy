@@ -1,7 +1,14 @@
 import { adminClient, result } from "../../lib/db.js";
-import { config } from "../../config.js";
+import {
+  config,
+  extractionModel,
+  extractionProviderName,
+} from "../../config.js";
 import { AppError } from "../../lib/errors.js";
-import { OpenAIProvider } from "../ai/provider.js";
+import {
+  createExtractionProvider,
+  type ExtractionProvider,
+} from "../ai/extraction-provider.js";
 import { pdfPages, chunkPages, inspectFile } from "./service.js";
 export async function processDocument(documentId: string) {
   const db = adminClient();
@@ -55,7 +62,8 @@ export async function processDocument(documentId: string) {
         workspace_id: d.workspace_id,
         document_id: d.id,
         status: "processing",
-        model: config.OPENAI_EXTRACTION_MODEL || null,
+        model: extractionModel() || null,
+        provider: extractionProviderName(),
       })
       .select("id")
       .single(),
@@ -70,9 +78,9 @@ export async function processDocument(documentId: string) {
     const inspected = await inspectFile(bytes, d.mime);
     if (inspected.hash !== d.sha256) throw new Error("HASH_MISMATCH");
     let pages = d.mime === "application/pdf" ? await pdfPages(bytes) : [];
-    let ai: OpenAIProvider | undefined;
+    let ai: ExtractionProvider | undefined;
     if (!pages.length || pages.some((p) => p.text.trim().length < 40)) {
-      ai = new OpenAIProvider();
+      ai = createExtractionProvider();
       await result(
         db.rpc("reserve_ai_usage", {
           w: d.workspace_id,
@@ -110,7 +118,7 @@ export async function processDocument(documentId: string) {
       );
     let extracted = null;
     if (d.kind === "invoice" || d.kind === "warranty") {
-      ai ??= new OpenAIProvider();
+      ai ??= createExtractionProvider();
       await result(
         db.rpc("reserve_ai_usage", {
           w: d.workspace_id,

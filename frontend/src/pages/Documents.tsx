@@ -1,4 +1,4 @@
-import { useState, useRef, lazy, Suspense } from "react";
+import { useState, useRef, useEffect, lazy, Suspense } from "react";
 import {
   Link,
   useNavigate,
@@ -20,6 +20,19 @@ import {
 } from "lucide-react";
 import { useApp, useWorkspaceApi, useWorkspaceQuery } from "../lib/context";
 import { ApiError, date } from "../lib/api";
+import { coverageDates, quantitySchema } from "../../../shared/domain";
+import {
+  readReviewDraft,
+  writeReviewDraft,
+  removeReviewDraft,
+  reviewDraftKey,
+} from "../lib/review-drafts";
+import {
+  emptyReviewItem,
+  reviewValues,
+  mergeReviewValues,
+  hasReviewEdits,
+} from "../lib/review-values";
 import {
   Button,
   PageHeader,
@@ -32,6 +45,20 @@ import {
   ConfirmButton,
   Loading,
 } from "../components/ui";
+const scanErrorMessages: Record<string, string> = {
+  AI_NOT_CONFIGURED:
+    "The scanner is not configured. You can enter details manually.",
+  AI_RATE_LIMIT:
+    "Groq’s usage limit was reached. Wait before choosing Retry extraction.",
+  AI_CREDENTIALS:
+    "The scanner cannot authenticate with Groq. Check the backend key and model permissions.",
+  AI_MODEL_UNAVAILABLE:
+    "The selected Groq model is unavailable or does not support this scan. Check the scanner configuration.",
+  AI_INCOMPLETE:
+    "The scanner could not finish reading the document. Try fewer pages or enter details manually.",
+  SCAN_TIME_LIMIT:
+    "This scan took too long. Split the document into smaller files and retry.",
+};
 const PdfPreview = lazy(() => import("../components/PdfPreview"));
 export function Documents() {
   const q = useWorkspaceQuery("/documents", { poll: 10000 });
@@ -248,7 +275,7 @@ export function UploadDocument() {
               [
                 "02",
                 "Find the details",
-                "The background worker reads supported documents when AI is configured.",
+                "The scanner reads your photo or invoice and fills in the details automatically when connected.",
               ],
               [
                 "03",
@@ -343,14 +370,56 @@ export function DocumentReview() {
   const { id } = useParams();
   const [params] = useSearchParams();
   const [page, setPage] = useState(Number(params.get("page") || 1));
-  const q = useWorkspaceQuery(`/documents/${id}`, { poll: 5000 });
-  const { canEdit, refresh, toast } = useApp();
+  const q = useWorkspaceQuery(`/documents/${id}`, { poll: 2000 });
+  const { canEdit, refresh, toast, session, workspaceId } = useApp();
   const call = useWorkspaceApi();
   const [error, setError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const d = q.data?.document;
   const extraction = q.data?.extraction;
+  async function deleteDocument(deleteProducts = false) {
+    const result = await call(`/documents/${d.id}`, {
+      method: "DELETE",
+      body: { delete_created_products: deleteProducts },
+    });
+    if (session)
+      removeReviewDraft(reviewDraftKey(session.user.id, workspaceId, d.id));
+    refresh();
+    toast(
+      result.status === "deleted"
+        ? deleteProducts
+          ? "Document and its created products deleted."
+          : "Document deleted. Saved products were kept."
+        : "Document hidden. File cleanup is pending and will retry automatically.",
+    );
+    navigate("/documents");
+  }
+  if (!q.data && q.error instanceof ApiError && q.error.code === "NOT_FOUND")
+    return (
+      <>
+        <PageHeader
+          title="Document unavailable"
+          description="This document may have been deleted or belongs to a different workspace."
+        />
+        <Empty
+          title="Let’s get you back to your documents."
+          description="Check the selected workspace, or upload the invoice again. Existing product records are not changed."
+          action={
+            <div className="actions">
+              <Link className="btn btn-secondary" to="/documents">
+                View documents
+              </Link>
+              {canEdit && (
+                <Link className="btn btn-primary" to="/documents/upload">
+                  Upload invoice again
+                </Link>
+              )}
+            </div>
+          }
+        />
+      </>
+    );
   return (
     <>
       <Link to="/documents" className="back-link">
@@ -362,10 +431,11 @@ export function DocumentReview() {
         description="Only what you confirm becomes part of your records."
         action={d && <Status>{d.status}</Status>}
       />
-      <QueryState query={q}>
+      <QueryState query={{ ...q, error: q.data ? null : q.error }}>
         {d && (
           <>
             <ErrorNotice error={error} />
+            <ErrorNotice error={q.error} retry={() => void q.refetch()} />
             <p className="muted">
               Document assistant index: <Status>{d.index_status}</Status>
             </p>
@@ -373,19 +443,40 @@ export function DocumentReview() {
               <Notice>
                 <strong>{d.error_code.replaceAll("_", " ")}</strong>
                 <p>
-                  {d.error_code === "AI_NOT_CONFIGURED"
-                    ? "AI is not configured. You can read the original and enter purchase details below."
-                    : "Processing needs attention. Check the original and enter details manually, or retry when the service is available."}
+                  {scanErrorMessages[d.error_code] ??
+                    "Processing needs attention. Check the original and enter details manually, or retry when the service is available."}
                 </p>
               </Notice>
             )}
-            {["queued", "processing"].includes(d.status) && (
-              <Notice>
-                {d.status === "queued"
-                  ? "Queued for the background worker. Start the worker if this status does not change."
-                  : "Reading your document. You can check the original while processing continues."}
-              </Notice>
-            )}
+            {["queued", "processing"].includes(d.status) &&
+              (d.status === "processing" ? (
+                <Loading label="Scanning your document. Details will appear automatically below…" />
+              ) : q.data.scanner?.configured === false ? (
+                <Notice>
+                  <strong>Automatic scanning needs setup.</strong>
+                  <p>
+                    Your original is saved. The document scanner is not
+                    connected yet, so it cannot fill these fields. You can enter
+                    details manually or return after the scanner is configured.
+                  </p>
+                  <Link className="text-link" to="/settings">
+                    View connected services
+                  </Link>
+                </Notice>
+              ) : q.data.scanner?.available === false ? (
+                <Notice>
+                  <strong>The document scanner is offline.</strong>
+                  <p>
+                    Your upload is saved and will be picked up when the{" "}
+                    {q.data.scanner.reason === "queue"
+                      ? "queue connection"
+                      : "background worker"}{" "}
+                    returns. You can keep reviewing the original.
+                  </p>
+                </Notice>
+              ) : (
+                <Loading label="Waiting to scan. The details will fill in automatically…" />
+              ))}
             <div className="review-layout">
               <div className="review-original">
                 <DocumentPreview document={d} page={page} />
@@ -411,9 +502,10 @@ export function DocumentReview() {
                   </>
                 ) : d.kind === "invoice" && canEdit ? (
                   <PurchaseReviewForm
-                    key={extraction?.id || d.id}
+                    key={d.id}
                     document={d}
                     extracted={extraction?.result}
+                    extractionId={extraction?.id}
                   />
                 ) : (
                   <>
@@ -481,8 +573,8 @@ export function DocumentReview() {
                   <div className="suggestions">
                     <h3>Stated coverage to check</h3>
                     <p className="muted">
-                      These are suggestions only. Open a product’s Coverage tab
-                      to record and confirm them.
+                      Review and assign invoice warranties in the form above.
+                      For other document types, use the product’s Coverage tab.
                     </p>
                     {extraction.result.warranties.map((w: any, i: number) => (
                       <blockquote key={i}>
@@ -544,17 +636,22 @@ export function DocumentReview() {
                 )}
                 <ConfirmButton
                   title="Delete this document?"
-                  description="This revokes access and removes extracted text and embeddings. The background worker removes the stored original. Confirmed products remain, but their original document link is removed."
-                  onConfirm={async () => {
-                    await call(`/documents/${d.id}`, { method: "DELETE" });
-                    refresh();
-                    toast("Document scheduled for deletion.");
-                    navigate("/documents");
-                  }}
+                  description="Delete the stored file and document record. Products and warranties already saved from this invoice are kept. Use the separate delete-products option if you want to remove those too."
+                  onConfirm={() => deleteDocument()}
                 >
                   <Trash2 size={16} />
                   Delete document
                 </ConfirmButton>
+                {!!d.accepted_product_ids?.length && (
+                  <ConfirmButton
+                    title="Delete document and created products?"
+                    description={`Permanently delete this document and the ${d.accepted_product_ids.length} product record(s) originally created from it, including their warranties, service cases and reminders. Other uploaded documents are kept. This cannot be undone.`}
+                    onConfirm={() => deleteDocument(true)}
+                  >
+                    <Trash2 size={16} />
+                    Delete document and created products
+                  </ConfirmButton>
+                )}
               </div>
             )}
           </>
@@ -566,56 +663,84 @@ export function DocumentReview() {
 function PurchaseReviewForm({
   document,
   extracted,
+  extractionId,
 }: {
   document: any;
   extracted: any;
+  extractionId?: string;
 }) {
-  const { me, refresh, toast } = useApp();
+  const { me, refresh, toast, session, workspaceId } = useApp();
   const call = useWorkspaceApi();
   const navigate = useNavigate();
   const [error, setError] = useState<unknown>();
   const [duplicate, setDuplicate] = useState(false);
-  const emptyItem = {
-    name: "",
-    category: "Other",
-    brand: null,
-    model: null,
-    serial_number: null,
-    quantity: "1",
-    unit_price: null,
-    line_total: null,
-  };
+  const emptyItem = emptyReviewItem;
+  const draftKey = reviewDraftKey(session!.user.id, workspaceId, document.id);
+  const [restoredDraft] = useState(() => readReviewDraft(draftKey));
+  const preserveDraft = useRef(!!restoredDraft);
+  const [draftStatus, setDraftStatus] = useState(
+    restoredDraft ? "restored" : "empty",
+  );
+  const savingDraft = useRef(true);
   const f = useForm<any>({
-    defaultValues: {
-      seller: extracted?.seller ?? "",
-      invoice_number: extracted?.invoice_number ?? "",
-      purchase_date: extracted?.purchase_date ?? "",
-      currency: extracted
-        ? (extracted.currency ?? "")
-        : (me?.profile.currency ?? "INR"),
-      subtotal: extracted?.subtotal ?? "",
-      tax: extracted?.tax ?? "",
-      total: extracted?.total ?? "",
-      items: extracted?.items?.length
-        ? extracted.items.map((i: any) => ({
-            ...emptyItem,
-            ...i,
-            name: i.name ?? "",
-            quantity: i.quantity ?? "",
-            category: i.category ?? "Other",
-          }))
-        : [emptyItem],
-    },
+    defaultValues:
+      restoredDraft ?? reviewValues(extracted, me?.profile.currency ?? "INR"),
   });
   const items = useFieldArray({ control: f.control, name: "items" });
+  const warranties = useFieldArray({ control: f.control, name: "warranties" });
   const [checked, setChecked] = useState(false);
+  const [keptItems, setKeptItems] = useState(false);
+  const applied = useRef(extracted ? extractionId : undefined);
+  const { dirtyFields } = f.formState;
+  useEffect(() => {
+    if (!extracted || !extractionId || applied.current === extractionId) return;
+    applied.current = extractionId;
+    setKeptItems(
+      preserveDraft.current ||
+        hasReviewEdits(dirtyFields.items) ||
+        hasReviewEdits(dirtyFields.warranties),
+    );
+    f.reset(
+      mergeReviewValues(
+        f.getValues(),
+        reviewValues(extracted),
+        preserveDraft.current
+          ? Object.fromEntries(
+              Object.keys(f.getValues()).map((key) => [key, true]),
+            )
+          : dirtyFields,
+      ),
+      { keepDirty: true },
+    );
+    setChecked(false);
+    setDuplicate(false);
+    setError(undefined);
+    toast(
+      "Scan complete. Found details are filled in; your edits have been kept.",
+    );
+  }, [extracted, extractionId, dirtyFields, f, toast]);
+  useEffect(() => {
+    const subscription = f.watch((values) => {
+      if (!savingDraft.current) return;
+      setDraftStatus(
+        writeReviewDraft(draftKey, values) ? "saved" : "unavailable",
+      );
+    });
+    return () => subscription.unsubscribe();
+  }, [f, draftKey]);
   return (
     <form
+      onChange={() => {
+        setChecked(false);
+        setDuplicate(false);
+      }}
       onSubmit={f.handleSubmit(async (values) => {
+        if (!checked) return;
         setError(undefined);
         const nullable = (v: any) => (v === "" || v == null ? null : String(v));
         const body = {
           ...values,
+          currency: values.currency.trim().toUpperCase(),
           seller: nullable(values.seller),
           invoice_number: nullable(values.invoice_number),
           purchase_date: nullable(values.purchase_date),
@@ -623,11 +748,31 @@ function PurchaseReviewForm({
           tax: nullable(values.tax),
           total: nullable(values.total),
           duplicate_acknowledged: duplicate,
+          warranties: values.warranties.map((w: any) => ({
+            ...w,
+            item_index: w.item_index === "" ? null : Number(w.item_index),
+            provider: nullable(w.provider),
+            explicit_start: nullable(w.explicit_start),
+            explicit_end: nullable(w.explicit_end),
+            duration_months:
+              w.duration_months === "" || w.duration_months == null
+                ? null
+                : Number(w.duration_months),
+            duration_days:
+              w.duration_days === "" || w.duration_days == null
+                ? null
+                : Number(w.duration_days),
+            conditions: nullable(w.conditions),
+            exclusions: nullable(w.exclusions),
+            uncertainty: nullable(w.uncertainty),
+          })),
           items: values.items.map((i: any) => ({
             ...i,
+            quantity: quantitySchema.parse(i.quantity),
             brand: nullable(i.brand),
             model: nullable(i.model),
             serial_number: nullable(i.serial_number),
+            specifications: nullable(i.specifications),
             unit_price: nullable(i.unit_price),
             line_total: nullable(i.line_total),
           })),
@@ -637,6 +782,8 @@ function PurchaseReviewForm({
             method: "POST",
             body,
           });
+          savingDraft.current = false;
+          removeReviewDraft(draftKey);
           refresh();
           toast(
             `${result.product_ids.length} product record${result.product_ids.length === 1 ? "" : "s"} created.`,
@@ -647,6 +794,42 @@ function PurchaseReviewForm({
         }
       })}
     >
+      <div className="draft-status">
+        <div>
+          <strong>
+            {draftStatus === "restored"
+              ? "Your unfinished review is restored."
+              : draftStatus === "saved"
+                ? "Draft saved on this browser."
+                : draftStatus === "unavailable"
+                  ? "This browser could not save your draft."
+                  : "Your edits will be saved as a draft."}
+          </strong>
+          <small>
+            {draftStatus === "unavailable"
+              ? "Keep this page open until you confirm your details."
+              : "Saved on this device. Drafts expire after 7 days and are cleared when you sign out. Review and confirm before creating products."}
+          </small>
+        </div>
+        <ConfirmButton
+          title="Discard your review edits?"
+          description="This clears this invoice’s local draft and restores the latest scanned details. Your uploaded invoice and existing products stay saved."
+          onConfirm={async () => {
+            savingDraft.current = false;
+            preserveDraft.current = false;
+            removeReviewDraft(draftKey);
+            f.reset(reviewValues(extracted, me?.profile.currency ?? "INR"));
+            setChecked(false);
+            setDuplicate(false);
+            setKeptItems(false);
+            setError(undefined);
+            setDraftStatus("empty");
+            savingDraft.current = true;
+          }}
+        >
+          Discard edits
+        </ConfirmButton>
+      </div>
       <div className="section-heading">
         <div>
           <p className="eyebrow">
@@ -661,6 +844,28 @@ function PurchaseReviewForm({
           ? "Check each field against the original. Blank fields were not found in the document."
           : "Enter the information shown on your receipt. Leave missing details blank."}
       </p>
+      {keptItems && extracted?.items?.length > 0 && (
+        <Notice>
+          <strong>Your product edits were kept.</strong>
+          <p>
+            The scanner found {extracted.items.length} item(s). Your edited list
+            stays in place because matching items by row could overwrite your
+            work.
+          </p>
+          <ConfirmButton
+            title="Use the scanned product list?"
+            description="This replaces your current product rows and warranty associations with the scanner’s suggestions. Your seller, invoice date and invoice totals stay as they are. Review the suggested items before confirming."
+            onConfirm={async () => {
+              items.replace(reviewValues(extracted).items);
+              warranties.replace(reviewValues(extracted).warranties);
+              setKeptItems(false);
+              setChecked(false);
+            }}
+          >
+            Use scanned product list
+          </ConfirmButton>
+        </Notice>
+      )}
       <div className="form-grid">
         {[
           ["seller", "Seller", "text"],
@@ -669,7 +874,18 @@ function PurchaseReviewForm({
           ["currency", "Currency", "text"],
         ].map(([name, label, type]) => (
           <Field key={name} label={label}>
-            <input {...f.register(name)} type={type} />
+            <input
+              {...f.register(name)}
+              type={type}
+              maxLength={name === "currency" ? 3 : undefined}
+              pattern={name === "currency" ? "[A-Za-z]{3}" : undefined}
+            />
+            {name === "currency" && (
+              <small>
+                Three-letter code, such as INR. Enter prices in the amount
+                fields.
+              </small>
+            )}
           </Field>
         ))}
       </div>
@@ -686,13 +902,33 @@ function PurchaseReviewForm({
               variant="ghost"
               aria-label={`Remove item ${index + 1}`}
               disabled={items.fields.length === 1}
-              onClick={() => items.remove(index)}
+              onClick={() => {
+                items.remove(index);
+                warranties.replace(
+                  f.getValues("warranties").map((w: any) => ({
+                    ...w,
+                    item_index:
+                      w.item_index === "" || Number(w.item_index) === index
+                        ? ""
+                        : Number(w.item_index) > index
+                          ? Number(w.item_index) - 1
+                          : Number(w.item_index),
+                  })),
+                );
+                setChecked(false);
+              }}
             >
               <Trash2 size={15} />
             </Button>
           </div>
           <Field label="Product name">
             <input {...f.register(`items.${index}.name`)} required />
+          </Field>
+          <Field label="Specifications">
+            <textarea
+              {...f.register(`items.${index}.specifications`)}
+              placeholder="Not provided on the invoice"
+            />
           </Field>
           <div className="form-grid">
             {[
@@ -704,7 +940,45 @@ function PurchaseReviewForm({
               ["line_total", "Total product cost"],
             ].map(([name, label]) => (
               <Field key={name} label={label}>
-                <input {...f.register(`items.${index}.${name}`)} />
+                <input
+                  {...f.register(
+                    `items.${index}.${name}`,
+                    name === "quantity"
+                      ? {
+                          validate: (value) => {
+                            const result = quantitySchema.safeParse(value);
+                            return (
+                              result.success || result.error.issues[0].message
+                            );
+                          },
+                        }
+                      : {},
+                  )}
+                  inputMode={name === "quantity" ? "decimal" : undefined}
+                  aria-invalid={
+                    name === "quantity" &&
+                    !!(f.formState.errors.items as any)?.[index]?.quantity
+                  }
+                  aria-describedby={
+                    name === "quantity" ? `quantity-hint-${index}` : undefined
+                  }
+                />
+                {name === "quantity" && (
+                  <small
+                    id={`quantity-hint-${index}`}
+                    role={
+                      (f.formState.errors.items as any)?.[index]?.quantity
+                        ? "alert"
+                        : undefined
+                    }
+                  >
+                    {String(
+                      (f.formState.errors.items as any)?.[index]?.quantity
+                        ?.message ??
+                        "Required. Enter the quantity shown on the invoice, for example 1.",
+                    )}
+                  </small>
+                )}
               </Field>
             ))}
           </div>
@@ -713,10 +987,139 @@ function PurchaseReviewForm({
       <Button
         type="button"
         variant="secondary"
-        onClick={() => items.append(emptyItem)}
+        onClick={() => {
+          items.append({ ...emptyItem });
+          setChecked(false);
+        }}
       >
         <Plus size={15} />
         Add another item
+      </Button>
+      <div className="review-subheading">
+        <h3>Warranty details</h3>
+      </div>
+      <p className="muted">
+        Assign each warranty to its product. Missing terms stay blank. Confirm
+        dates only when the invoice supports them; otherwise the warranty is
+        saved as unconfirmed.
+      </p>
+      {!warranties.fields.length && (
+        <Notice>
+          No warranty details were found or entered. No warranty will be
+          assumed.
+        </Notice>
+      )}
+      {warranties.fields.map((w, index) => (
+        <div className="review-item" key={w.id}>
+          <div className="section-heading">
+            <strong>Warranty {index + 1}</strong>
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label={`Remove warranty ${index + 1}`}
+              onClick={() => {
+                warranties.remove(index);
+                setChecked(false);
+              }}
+            >
+              <Trash2 size={15} />
+            </Button>
+          </div>
+          <Field label="Covered product">
+            <select {...f.register(`warranties.${index}.item_index`)} required>
+              <option value="">Choose the matching product</option>
+              {f.watch("items").map((item: any, i: number) => (
+                <option key={i} value={i}>
+                  {i + 1}. {item.name || "Unnamed product"}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Warranty type">
+            <select {...f.register(`warranties.${index}.kind`)} required>
+              <option value="">Choose the stated type</option>
+              <option value="manufacturer">Manufacturer warranty</option>
+              <option value="extended">Extended warranty</option>
+              <option value="repair">Repair warranty</option>
+              <option value="return">Return policy</option>
+            </select>
+          </Field>
+          <Field label="Warranty provider">
+            <input
+              {...f.register(`warranties.${index}.provider`)}
+              placeholder="Not provided"
+            />
+          </Field>
+          <Field label="Warranty starts from">
+            <select {...f.register(`warranties.${index}.basis`)}>
+              <option value="explicit">
+                Stated date below (leave blank if unknown)
+              </option>
+              <option value="purchase">Purchase date — only if stated</option>
+              <option value="delivery">Delivery date — only if stated</option>
+            </select>
+          </Field>
+          <div className="form-grid">
+            {[
+              ["explicit_start", "Stated start date", "date"],
+              ["explicit_end", "Stated end date", "date"],
+              ["duration_months", "Warranty months", "number"],
+              ["duration_days", "Or warranty days", "number"],
+            ].map(([name, label, type]) => (
+              <Field key={name} label={label}>
+                <input
+                  {...f.register(`warranties.${index}.${name}`)}
+                  type={type}
+                  min={type === "number" ? 0 : undefined}
+                />
+              </Field>
+            ))}
+          </div>
+          <WarrantyDates
+            value={f.watch(`warranties.${index}`)}
+            purchaseDate={f.watch("purchase_date")}
+          />
+          {[
+            ["conditions", "Warranty terms and source"],
+            ["exclusions", "Exclusions"],
+            ["uncertainty", "Unknown or conflicting terms"],
+          ].map(([name, label]) => (
+            <Field key={name} label={label}>
+              <textarea {...f.register(`warranties.${index}.${name}`)} />
+            </Field>
+          ))}
+          <label className="inline-check">
+            <input
+              type="checkbox"
+              {...f.register(`warranties.${index}.confirmed`)}
+            />
+            I checked this warranty’s provider, terms and dates.
+          </label>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={() => {
+          warranties.append({
+            item_index: "",
+            kind: "",
+            provider: "",
+            basis: "explicit",
+            explicit_start: "",
+            explicit_end: "",
+            duration_months: "",
+            duration_days: "",
+            conditions: "",
+            exclusions: "",
+            uncertainty: "",
+            confirmed: false,
+          });
+          setChecked(false);
+        }}
+      >
+        <Plus size={15} />
+        Add warranty from invoice
       </Button>
       <details className="invoice-totals">
         <summary>Invoice-level totals</summary>
@@ -742,7 +1145,10 @@ function PurchaseReviewForm({
           <input
             type="checkbox"
             checked={duplicate}
-            onChange={(e) => setDuplicate(e.target.checked)}
+            onChange={(e) => {
+              e.stopPropagation();
+              setDuplicate(e.target.checked);
+            }}
           />
           These are separate purchases. Create them anyway.
         </label>
@@ -751,7 +1157,10 @@ function PurchaseReviewForm({
         <input
           type="checkbox"
           checked={checked}
-          onChange={(e) => setChecked(e.target.checked)}
+          onChange={(e) => {
+            e.stopPropagation();
+            setChecked(e.target.checked);
+          }}
         />
         I checked these details against the original document.
       </label>
@@ -769,8 +1178,44 @@ function PurchaseReviewForm({
         Confirm & create products
       </Button>
       <p className="form-footnote">
-        Coverage stays unconfirmed until you check its terms separately.
+        Product details and assigned warranties are saved together. Only
+        warranties whose dates you explicitly confirmed can create reminders.
       </p>
     </form>
   );
+}
+
+function WarrantyDates({
+  value,
+  purchaseDate,
+}: {
+  value: any;
+  purchaseDate: string;
+}) {
+  try {
+    const dates = coverageDates(
+      {
+        ...value,
+        explicit_start: value.explicit_start || null,
+        explicit_end: value.explicit_end || null,
+        duration_months:
+          value.duration_months === "" || value.duration_months == null
+            ? null
+            : Number(value.duration_months),
+        duration_days:
+          value.duration_days === "" || value.duration_days == null
+            ? null
+            : Number(value.duration_days),
+      },
+      { purchase_date: purchaseDate || null },
+    );
+    return (
+      <p className="muted">
+        Coverage dates: {date(dates.start_date)} to {date(dates.end_date)}. A
+        stated end date takes precedence over duration.
+      </p>
+    );
+  } catch {
+    return <Notice>Check the warranty dates and duration.</Notice>;
+  }
 }

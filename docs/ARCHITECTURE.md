@@ -47,6 +47,8 @@ AI request rate limits, input/output limits and a PostgreSQL workspace daily usa
 
 BullMQ jobs use stable IDs, exponential backoff and four attempts. PostgreSQL remains the source of document state and all future reminder schedules. Every 30 seconds the scanner queues pending/due work, recovers 15-minute stale processing leases, retries eligible email deliveries, and performs pending deletions. In-app notification insertion, delivery marking, and the next maintenance recurrence commit atomically; uniqueness prevents notification duplication on retry. Failed extraction/index states remain visible and can be retried from the document screen. An unavailable Redis does not erase schedules.
 
+Completed uploads and explicit extraction retries also attempt immediate dispatch with the same stable document job ID. Dispatch has bounded connection waits; a queue outage leaves the durable queued record for recovery. Authorised document-detail responses report scanner configuration and connected-worker availability, cached for five seconds. A connected worker is not proof of AI provider availability. The review form applies completed extraction results once per extraction run, fills untouched fields, preserves edited item lists as a whole, and resets the confirmation checkbox. Polling errors do not unmount an existing draft.
+
 Optional Resend delivery records distinguish `pending`, `accepted`, `failed`, `disabled` and actual in-app `delivered`. The provider idempotency key limits duplicate sends, subject to the provider's retention period. There is no delivery webhook, so inbox delivery is not claimed. SMTP for Auth is configured independently. Worker logs avoid document contents and key material. Process supervision and operational alerting must be configured by an operator.
 
 ## Known limits and verification boundaries
@@ -66,3 +68,17 @@ Optional Resend delivery records distinguish `pending`, `accepted`, `failed`, `d
 - [OpenAI structured outputs](https://platform.openai.com/docs/guides/structured-outputs) and [PDF inputs](https://platform.openai.com/docs/guides/pdf-files)
 - [BullMQ retry/backoff](https://docs.bullmq.io/guide/retrying-failing-jobs)
 - [Tailwind Vite integration](https://tailwindcss.com/docs/installation/using-vite) and [Vite getting started](https://vite.dev/guide/)
+
+
+## Invoice specifications and warranty confirmation
+
+Migration `202610250001_invoice_product_warranties.sql` adds nullable product specifications and extends the transactional invoice confirmation to create per-product coverage with the original invoice as its source. The API uses the new `confirm_invoice_details` entry point so an unmigrated database returns a setup error instead of silently dropping warranty/specification fields. The existing `confirm_extraction` RPC remains compatible with old callers that omit warranties.
+
+AI results identify a zero-based invoice item for each warranty. Ambiguous associations require the reviewer to choose a product; removal of a product unassigns its warranty and shifts later indices. Product and warranty edits are preserved together during late scan updates. All saved coverage starts unconfirmed unless the reviewer explicitly confirms its provider and resolvable dates. Missing providers are stored as an empty value and displayed as not provided; missing start bases use an explicit, blank start rather than assuming purchase date. No coverage is manufactured for invoices without warranty terms.
+
+
+## Groq and local invoice execution
+
+`EXTRACTION_PROVIDER` selects the extraction adapter; `auto` prefers a configured Groq key. Groq receives strict Chat Completions JSON schemas with validated responses. The PDF rasterizer uses an explicit native canvas dependency, yields pages sequentially and caps the longest edge at 2,000 pixels. Each request uses at most one image. Groq scan calls share a ten-minute deadline, shorter than the 15-minute processing lease recovery threshold. Rate-limit, invalid credential, incomplete output and model-access failures are stored as safe error codes rather than raw provider responses.
+
+`DOCUMENT_PROCESSING_MODE=inline` starts a bounded scheduler only after the API successfully binds its port. Uploaded document rows remain authoritative. A ten-second scanner rediscovers queued records, deduplicates active IDs, limits concurrency and recovers stale processing leases. A failed scan remains failed until retried by the user; a saturated process leaves work queued for a later recovery pass. Shutdown stops discovery and drains active scans. Inline mode supplies invoice extraction only; reminder delivery, storage deletion and assistant indexing retain the existing separate worker requirements. Queue mode remains available for deployments using Redis.

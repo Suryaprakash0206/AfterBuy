@@ -78,6 +78,7 @@ const Settings = lazy(() =>
   import("./pages/Settings").then((m) => ({ default: m.Settings })),
 );
 import "./styles.css";
+import "./glass.css";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: { staleTime: 15000, retry: 1, refetchOnWindowFocus: true },

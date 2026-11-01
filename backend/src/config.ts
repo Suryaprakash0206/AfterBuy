@@ -5,6 +5,11 @@ const schema = z.object({
   SUPABASE_URL: z.string().default(""),
   SUPABASE_PUBLISHABLE_KEY: z.string().default(""),
   SUPABASE_SERVICE_ROLE_KEY: z.string().default(""),
+  EXTRACTION_PROVIDER: z.enum(["auto", "groq", "openai"]).default("auto"),
+  GROQ_API_KEY: z.string().default(""),
+  GROQ_EXTRACTION_MODEL: z.string().default("qwen/qwen3.8-27b"),
+  GROQ_VISION_MODEL: z.string().default("qwen/qwen3.8-27b"),
+  DOCUMENT_PROCESSING_MODE: z.enum(["queue", "inline"]).default("queue"),
   OPENAI_API_KEY: z.string().default(""),
   OPENAI_EXTRACTION_MODEL: z.string().default(""),
   OPENAI_CHAT_MODEL: z.string().default(""),
@@ -44,11 +49,24 @@ const schema = z.object({
   EMAIL_FROM: z.string().default(""),
 });
 export const config = schema.parse(process.env);
+export const extractionProviderName = () =>
+  config.EXTRACTION_PROVIDER === "auto"
+    ? config.GROQ_API_KEY
+      ? "groq"
+      : "openai"
+    : config.EXTRACTION_PROVIDER;
+export const extractionModel = () =>
+  extractionProviderName() === "groq"
+    ? config.GROQ_EXTRACTION_MODEL
+    : config.OPENAI_EXTRACTION_MODEL;
 export const capabilities = () => ({
   database: !!(config.SUPABASE_URL && config.SUPABASE_PUBLISHABLE_KEY),
   extraction: !!(
-    config.OPENAI_API_KEY &&
-    config.OPENAI_EXTRACTION_MODEL &&
+    (extractionProviderName() === "groq"
+      ? config.GROQ_API_KEY &&
+        config.GROQ_EXTRACTION_MODEL &&
+        config.GROQ_VISION_MODEL
+      : config.OPENAI_API_KEY && config.OPENAI_EXTRACTION_MODEL) &&
     config.SUPABASE_SERVICE_ROLE_KEY
   ),
   assistant: !!(

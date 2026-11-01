@@ -205,7 +205,9 @@ export function ConfirmButton({
   return (
     <AlertDialog.Root open={open} onOpenChange={setOpen}>
       <AlertDialog.Trigger asChild>
-        <Button variant="ghost">{children}</Button>
+        <Button type="button" variant="ghost">
+          {children}
+        </Button>
       </AlertDialog.Trigger>
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="modal-overlay" />
@@ -215,9 +217,12 @@ export function ConfirmButton({
           <ErrorNotice error={error} />
           <div className="actions end">
             <AlertDialog.Cancel asChild>
-              <Button variant="secondary">Cancel</Button>
+              <Button type="button" variant="secondary">
+                Cancel
+              </Button>
             </AlertDialog.Cancel>
             <Button
+              type="button"
               busy={busy}
               onClick={async () => {
                 setBusy(true);

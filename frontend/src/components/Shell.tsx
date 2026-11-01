@@ -18,6 +18,8 @@ import {
 import { useApp } from "../lib/context";
 import { supabase } from "../lib/api";
 import { Modal } from "./ui";
+import { VisualEffects } from "./VisualEffects";
+import { QuickSearch } from "./QuickSearch";
 const navigation = [
   ["/", "Overview", LayoutDashboard],
   ["/products", "My products", Package],
@@ -122,6 +124,8 @@ export function Shell() {
             <strong>{current}</strong>
           </div>
           <div className="topbar-actions">
+            <QuickSearch />
+            <VisualEffects />
             <Link
               to="/notifications"
               className="icon-button"
